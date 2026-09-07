@@ -502,10 +502,10 @@ Screenshot: test_screenshots/client_profile.png
 | File | Change |
 |---|---|
 | `mcp_server.py` | Fixed Windows path: `pathlib.Path` instead of string `rsplit('/')` |
-| `testctl.py` | Added no-adapter guard (400 error), auto-close stale adapter on relaunch |
-| `adapters/web_playwright.py` | Added Flutter accessibility tree activation, `textContent` search, role-based checkbox/tab mapping, off-screen scroll handling |
+| `testctl.py` | Added no-adapter guard (400 error), auto-close stale adapter on relaunch; added `find_in_region` and `tap_in_region` server commands + CLI subparsers |
+| `adapters/base.py` | Added optional `find_in_region()` and `tap_in_region()` methods with `NotImplementedError` defaults |
+| `adapters/web_playwright.py` | Flutter accessibility tree activation, `textContent` search, role-based checkbox/tab mapping, off-screen scroll handling, `find_in_region()`, `tap_in_region()` |
 | `master_test.py` | Full automated test script (created for this run) |
-| `adapters/web_playwright.py` | Added `_role_based_find()` for checkboxes/tabs, `_scroll_into_view()`, `find_in_region()`, `tap_in_region()` |
 
 ---
 
@@ -542,11 +542,11 @@ Screenshot: test_evidence/qa_console_4_panels.png
 
 ```
 Step: QA4 -- OWNER panel chip click works
-Result: PASS (partial)
+Result: FAIL
 What happened: Opened Dev Quick Sign-In in OWNER panel, dragged bottom sheet to reveal
   job type chips. Clicked "Herbalist" chip with flt-semantics pointer-events bypass.
   Bottom sheet dismissed (chip click registered).
-  However, sign-in did not complete -- Flutter's nested Navigator canvas hit-test
+  However, sign-in did not complete — Flutter's nested Navigator canvas hit-test
   doesn't properly route the click to the chip's on-tap handler.
   This is a Playwright + Flutter Web harness limitation, not an app bug.
 What was expected: OWNER panel signs in and shows dashboard

@@ -132,6 +132,25 @@ def _make_handler():
                     _State.adapter.type_text(args["text"])
                     self._reply({"ok": True, "result": "typed"})
 
+                elif command == "find_in_region":
+                    result = _State.adapter.find_in_region(
+                        args["text"], args["region"]
+                    )
+                    self._reply({"ok": result is not None, "result": result})
+
+                elif command == "tap_in_region":
+                    found = _State.adapter.find_in_region(
+                        args["text"], args["region"]
+                    )
+                    if found is None:
+                        self._reply(
+                            {"ok": False,
+                             "error": f"text not found in region: '{args['text']}'"}
+                        )
+                        return
+                    _State.adapter.tap(found["x"], found["y"])
+                    self._reply({"ok": True, "result": found})
+
                 elif command == "close":
                     _State.adapter.close()
                     _State.adapter = None
@@ -192,6 +211,18 @@ def main():
     p_tap.add_argument("text", help="Finds this text on screen, then taps its center.")
     p_type = sub.add_parser("type")
     p_type.add_argument("text")
+    p_find_region = sub.add_parser("find_in_region")
+    p_find_region.add_argument("text")
+    p_find_region.add_argument(
+        "region",
+        help='JSON bounding box: {"x1":0,"y1":0,"x2":640,"y2":400}',
+    )
+    p_tap_region = sub.add_parser("tap_in_region")
+    p_tap_region.add_argument("text")
+    p_tap_region.add_argument(
+        "region",
+        help='JSON bounding box: {"x1":0,"y1":0,"x2":640,"y2":400}',
+    )
     sub.add_parser("close")
 
     args = parser.parse_args()
@@ -208,6 +239,12 @@ def main():
         result = _post(args.port, "tap", text=args.text)
     elif args.command == "type":
         result = _post(args.port, "type", text=args.text)
+    elif args.command == "find_in_region":
+        region = json.loads(args.region)
+        result = _post(args.port, "find_in_region", text=args.text, region=region)
+    elif args.command == "tap_in_region":
+        region = json.loads(args.region)
+        result = _post(args.port, "tap_in_region", text=args.text, region=region)
     else:
         result = _post(args.port, args.command)
 

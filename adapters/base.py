@@ -2,13 +2,18 @@
 adapters/base.py
 
 The contract every platform adapter implements. testctl.py never talks to
-Playwright/Appium/pywinauto directly — it only ever calls these 6 methods.
+Playwright/Appium/pywinauto directly — it only ever calls these methods.
 That's what makes the CLI (and every agent driving it) identical across
 web/Android/Windows/whatever comes next: only the adapter underneath swaps.
 
 Coordinates for tap() are (x, y) in the SCREENSHOT's pixel space, which
 is why every adapter must return screenshots at a known, stable size —
 see each adapter's own docstring for specifics.
+
+Optional methods (find_in_region, tap_in_region): adapters that support
+multi-panel or region-constrained search implement these. Adapters that
+don't (Android, Windows) leave the defaults and callers get
+NotImplementedError.
 """
 
 from abc import ABC, abstractmethod
@@ -46,3 +51,23 @@ class Adapter(ABC):
     @abstractmethod
     def close(self) -> None:
         """Tear down the app/session cleanly."""
+
+    # ── Optional: multi-panel / region-constrained search ──────────────────
+
+    def find_in_region(self, text: str, region: dict) -> dict | None:
+        """Search for `text` only within a bounding box.
+        region = {"x1": int, "y1": int, "x2": int, "y2": int}
+        Return {'x': int, 'y': int, 'matched': str} or None.
+
+        Adapters that don't support region-constrained search leave this
+        as the default — callers get NotImplementedError."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support find_in_region"
+        )
+
+    def tap_in_region(self, text: str, region: dict) -> dict | None:
+        """Find `text` within a region, then tap it. Returns the match
+        dict if found and tapped, or None."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support tap_in_region"
+        )
