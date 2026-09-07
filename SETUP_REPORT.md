@@ -26,9 +26,9 @@ The harness had never been run before. Three bugs were found and fixed during se
 
 ## Summary
 
-- Total steps: 50
+- Total steps: 51
 - Passed: 40
-- Failed: 9
+- Failed: 10
 - Blocked (couldn't test): 1
 
 ---
