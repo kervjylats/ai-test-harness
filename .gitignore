@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+test_screenshots/
+test_results.json
+*.png
+smoke.png
+projects/smoketest.config.json
