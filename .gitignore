@@ -4,5 +4,6 @@ __pycache__/
 test_screenshots/
 test_results.json
 *.png
+!test_evidence/*.png
 smoke.png
 projects/smoketest.config.json

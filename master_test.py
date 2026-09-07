@@ -237,6 +237,123 @@ def sign_out(page):
     enable_flutter_acc(page)
     return True  # always succeeds — we're back at login
 
+
+def navigate_to_qa_console(page):
+    """Open the Dev Quick Sign-In panel and click 'Open QA Console'."""
+    page.goto("http://localhost:8080")
+    page.wait_for_timeout(4000)
+    enable_flutter_acc(page)
+    # Click orange Dev button (bottom-right)
+    page.mouse.click(1250, 770)
+    page.wait_for_timeout(2000)
+    enable_flutter_acc(page)
+    # Click the QA Console button
+    result = page.evaluate("""() => {
+        const sems = document.querySelectorAll('flt-semantics');
+        for (const s of sems) {
+            const t = (s.textContent || '');
+            if (t.includes('Open QA Console')) {
+                const r = s.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
+            }
+        }
+        return null;
+    }""")
+    if result:
+        page.mouse.click(result["x"], result["y"])
+        page.wait_for_timeout(4000)
+        enable_flutter_acc(page)
+        return True
+    return False
+
+
+def get_qa_panel_regions(page):
+    """Detect the 4 QA Console panel regions from the accessibility tree."""
+    # The QA Console has 4 panels labeled OWNER, PARTNER, STAFF, CLIENT
+    # in a 2x2 grid. Find their approximate regions from tab elements.
+    snap = page.accessibility.snapshot()
+    panels = {}
+    def find_role_labels(node, role_name):
+        if node.get("role") == "tab" and node.get("name"):
+            if node["name"] in ("OWNER", "PARTNER", "STAFF", "CLIENT"):
+                panels[node["name"]] = True
+        for c in node.get("children", []):
+            find_role_labels(c, role_name)
+    find_role_labels(snap, "tab")
+
+    # QA Console panels are in a 2x2 grid
+    # OWNER: top-left, PARTNER: top-right, STAFF: bottom-left, CLIENT: bottom-right
+    regions = {}
+    if "OWNER" in panels:
+        regions["OWNER"] = {"x1": 0, "y1": 0, "x2": 640, "y2": 400}
+    if "PARTNER" in panels:
+        regions["PARTNER"] = {"x1": 640, "y1": 0, "x2": 1280, "y2": 400}
+    if "STAFF" in panels:
+        regions["STAFF"] = {"x1": 0, "y1": 400, "x2": 640, "y2": 800}
+    if "CLIENT" in panels:
+        regions["CLIENT"] = {"x1": 640, "y1": 400, "x2": 1280, "y2": 800}
+    return regions
+
+
+def verify_qa_panel_hasSignIn(page, panel_name, region):
+    """Check that a QA panel shows a sign-in screen (Email field)."""
+    result = page.evaluate("""(args) => {
+        const [x1, y1, x2, y2] = [args.x1, args.y1, args.x2, args.y2];
+        const sems = document.querySelectorAll('flt-semantics');
+        for (const s of sems) {
+            const t = (s.textContent || '');
+            if (t === 'Email' || t === 'Sign In') {
+                const r = s.getBoundingClientRect();
+                const cx = r.x + r.width/2, cy = r.y + r.height/2;
+                if (r.width > 0 && r.height > 0 &&
+                    cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) {
+                    return {found: true, text: t};
+                }
+            }
+        }
+        return {found: false};
+    }""", region)
+    return result.get("found", False)
+
+
+def sign_in_qa_owner(page, job_type):
+    """Sign in as Owner within the OWNER panel of the QA Console."""
+    # OWNER panel is top-left (0,0 to 640,400)
+    # Each panel has its own Dev Quick Sign-In button
+    # Find the dev button within the OWNER panel region
+    result = page.evaluate("""() => {
+        const sems = document.querySelectorAll('flt-semantics');
+        const matches = [];
+        for (const s of sems) {
+            const t = (s.textContent || '');
+            if (t.includes('Dev Quick Sign-In') || t === '') {
+                const r = s.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0 && r.x < 640 && r.y < 400) {
+                    // This is in the OWNER panel — look for the orange FAB nearby
+                    matches.push({x: r.x, y: r.y, w: r.width, h: r.height, text: t});
+                }
+            }
+        }
+        // Find the small FAB button (40x40 or similar) in the OWNER panel
+        for (const s of sems) {
+            const r = s.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0 && r.width < 60 && r.height < 60 &&
+                r.x >= 560 && r.x <= 640 && r.y >= 340 && r.y <= 400) {
+                return {x: r.x + r.width/2, y: r.y + r.height/2};
+            }
+        }
+        return null;
+    }""")
+    if result:
+        page.mouse.click(result["x"], result["y"])
+        page.wait_for_timeout(2000)
+        enable_flutter_acc(page)
+        return find_and_click(page, job_type)
+    return False
+
+
 def run_tests():
     pw = sync_playwright().start()
     browser = pw.chromium.launch(headless=True)
@@ -355,6 +472,99 @@ def run_tests():
     page.wait_for_timeout(1000)
     record("CC9", "Window resize doesn't break layout", "pass",
            "Layout adapts to resize", s9a, f"Small: 800x600, Large: 1920x1080")
+
+    # =====================================================================
+    # QA CONSOLE CHECKS
+    # =====================================================================
+    print("\n=== QA CONSOLE CHECKS ===\n")
+
+    # QA1: QA Console opens from Dev Quick Sign-In
+    qa_opened = navigate_to_qa_console(page)
+    s_qa = screenshot(page, "qa_console_overview")
+    record("QA1", "QA Console opens from Dev Quick Sign-In",
+           "pass" if qa_opened else "fail",
+           "QA Console page loaded", s_qa)
+
+    # QA2: All 4 panels load
+    if qa_opened:
+        regions = get_qa_panel_regions(page)
+        # Check by finding panel role labels in the accessibility tree
+        snap = page.accessibility.snapshot()
+        panel_names_found = []
+        def find_panels(n):
+            if n.get("role") == "tab" and n.get("name"):
+                if n["name"] in ("OWNER", "PARTNER", "STAFF", "CLIENT"):
+                    panel_names_found.append(n["name"])
+            for c in n.get("children", []):
+                find_panels(c)
+        find_panels(snap)
+
+        all_panels = set(panel_names_found)
+        expected = {"OWNER", "PARTNER", "STAFF", "CLIENT"}
+        panels_ok = expected.issubset(all_panels)
+        record("QA2", "All 4 panels load (OWNER, PARTNER, STAFF, CLIENT)",
+               "pass" if panels_ok else "fail",
+               "All 4 panels present", s_qa,
+               f"Found: {sorted(all_panels)}")
+
+        # QA3: Verify each panel shows sign-in screen
+        regions = get_qa_panel_regions(page)
+        for panel_name, region in regions.items():
+            hasSignIn = verify_qa_panel_hasSignIn(page, panel_name, region)
+            record(f"QA3-{panel_name}", f"{panel_name} panel shows sign-in screen",
+                   "pass" if hasSignIn else "fail",
+                   "Sign-in elements visible in panel", "",
+                   f"Region: {region}")
+
+        # QA4: Sign in as Owner in OWNER panel
+        if regions.get("OWNER"):
+            # Click the orange FAB in the OWNER panel (top-left quadrant)
+            # The FAB is typically at bottom-right of each panel
+            fab_result = page.evaluate("""() => {
+                const sems = document.querySelectorAll('flt-semantics[role="button"]');
+                for (const s of sems) {
+                    const r = s.getBoundingClientRect();
+                    // OWNER panel is top-left (x < 640, y < 400)
+                    // FAB is small (~40x40) at bottom-right of panel
+                    if (r.width > 0 && r.width < 60 && r.height < 60 &&
+                        r.x > 560 && r.x < 640 && r.y > 340 && r.y < 400) {
+                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                    }
+                }
+                return null;
+            }""")
+            if fab_result:
+                page.mouse.click(fab_result["x"], fab_result["y"])
+                page.wait_for_timeout(2000)
+                enable_flutter_acc(page)
+                # Now find and click a job type chip within the OWNER panel
+                clicked = find_and_click(page, "Yoga Studio")
+                page.wait_for_timeout(3000)
+                enable_flutter_acc(page)
+                s_qa_owner = screenshot(page, "qa_console_owner_signed_in")
+                # Check if dashboard loaded in the OWNER panel
+                has_dashboard = page.evaluate("""() => {
+                    const sems = document.querySelectorAll('flt-semantics');
+                    for (const s of sems) {
+                        const t = (s.textContent || '');
+                        const r = s.getBoundingClientRect();
+                        if ((t.includes('Revenue Summary') || t.includes('Dev Yoga')) &&
+                            r.x < 640 && r.y < 400 && r.width > 0) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }""")
+                record("QA4", "OWNER panel signs in and shows dashboard",
+                       "pass" if has_dashboard else "fail",
+                       "Dashboard visible in OWNER panel", s_qa_owner)
+            else:
+                record("QA4", "OWNER panel FAB button found",
+                       "fail", "FAB button visible", "", "Could not find orange FAB in OWNER panel")
+    else:
+        record("QA2", "All 4 panels load", "fail", "Panels present", "", "QA Console did not open")
+        record("QA3-OWNER", "OWNER panel shows sign-in", "fail", "Sign-in visible", "", "QA Console did not open")
+        record("QA4", "OWNER panel signs in", "fail", "Dashboard visible", "", "QA Console did not open")
 
     # =====================================================================
     # 3-OWNER TEST PLAN
