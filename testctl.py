@@ -125,7 +125,10 @@ def _make_handler():
                     if found is None:
                         self._reply({"ok": False, "error": f"text not found: '{args['text']}'"})
                         return
-                    _State.adapter.tap(found["x"], found["y"])
+                    if hasattr(_State.adapter, "tap_element"):
+                        _State.adapter.tap_element(found)
+                    else:
+                        _State.adapter.tap(found["x"], found["y"])
                     self._reply({"ok": True, "result": found})
 
                 elif command == "type":
@@ -148,7 +151,10 @@ def _make_handler():
                              "error": f"text not found in region: '{args['text']}'"}
                         )
                         return
-                    _State.adapter.tap(found["x"], found["y"])
+                    if hasattr(_State.adapter, "tap_element"):
+                        _State.adapter.tap_element(found)
+                    else:
+                        _State.adapter.tap(found["x"], found["y"])
                     self._reply({"ok": True, "result": found})
 
                 elif command == "close":

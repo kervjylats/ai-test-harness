@@ -506,6 +506,7 @@ Screenshot: test_screenshots/client_profile.png
 | `adapters/base.py` | Added optional `find_in_region()` and `tap_in_region()` methods with `NotImplementedError` defaults |
 | `adapters/web_playwright.py` | Flutter accessibility tree activation, `textContent` search, role-based checkbox/tab mapping, off-screen scroll handling, `find_in_region()`, `tap_in_region()` |
 | `adapters/android_appium.py` | Added `content-desc` search (Flutter Android text), `find_in_region()`, `tap_in_region()` |
+| `adapters/windows_desktop.py` | Full rewrite: `AttachThreadInput` focus, `click_input()` for Flutter canvas, `_ensure_window()` reconnect, `tap_element()` |
 | `master_test.py` | Full automated test script (created for this run) |
 
 ---
@@ -682,3 +683,117 @@ Screenshot: test_evidence/android_checklist_09_create_account.png
 | **Total** | **6** | **0** | **0** |
 
 **All 6 Android checklist items PASS.** The roster-row fix, Business Features toggles, and Owner-only signup all work correctly on Android.
+
+---
+
+## Phase 2 — Windows Desktop Adapter (2026-09-08)
+
+### Setup
+
+- **pywinauto**: v0.6.9 (talks to Windows UI Automation accessibility layer)
+- **Flutter Windows build**: `flutter build windows --debug` → `build\windows\x64\runner\Debug\personal_wellness_trainer.exe`
+- **Adapter**: `adapters/windows_desktop.py`
+
+### Windows Adapter Bug Fixes
+
+Three issues were found and fixed:
+
+1. **Window focus**: Flutter's Windows renderer doesn't bring its window to the foreground reliably. pywinauto's `set_focus()` wasn't enough — needed `AttachThreadInput` trick to allow `SetForegroundWindow` from a background process. Without this, screenshots captured whatever window was in the foreground (often the browser), and `click_input()` sent clicks to the wrong window.
+
+2. **Click routing**: Flutter on Windows renders to a canvas. pywinauto's `mouse.click(coords=...)` uses `SetCursorPos` which Flutter doesn't respond to. Fixed by using `element.click_input()` which sends actual Windows input events via `SendInput` API — Flutter's canvas responds to these correctly.
+
+3. **Stale window reference**: After opening dialogs (Dev Quick Sign-In panel), the adapter's window reference could go stale. Added `_ensure_window()` that reconnects if the reference breaks.
+
+### Smoke Test Results
+
+```
+Step: Launch exe on Windows
+Result: PASS
+What happened: App launched via pywinauto Application.start(). Window appeared with
+  title "personal_wellness_trainer".
+Screenshot: test_evidence/win_01_login.png
+```
+
+```
+Step: find "Sign In", "Email", "Password", "Dev Quick Sign-In", "Create account"
+Result: PASS (5/5)
+What happened: All 5 elements found via child_window(title_re) search. Full
+  accessible tree visible with Button, Text, Edit controls.
+Screenshot: test_evidence/win_01_login.png
+```
+
+### Checklist Results (TESTING_CHECKLIST_2.md on Windows)
+
+```
+Step: 1.1 -- Dev Quick Sign-In panel shows job type chips
+Result: PASS
+What happened: Tapped Dev Quick Sign-In FAB via click_input(). Bottom sheet opened
+  showing all job type buttons: Yoga Studio, Pilates Studio, Strength Coach, etc.
+  Yoga Studio found at (499, 649).
+What was expected: Job type chips visible in dev panel
+Screenshot: test_evidence/win_dev_panel.png (from smoke test)
+```
+
+```
+Step: 1.2 -- Yoga Studio dashboard loads
+Result: PASS
+What happened: Tapped Yoga Studio chip. Dashboard loaded showing "Dev Yoga Studio"
+  with Revenue Summary (Net $182.00, Gross $200.00, Commissions $18.00, 3 Transactions),
+  Upcoming Content ("No Content yet"), Team (0 Partner, 0 Team Member, 0 Client).
+What was expected: Dashboard with Revenue Summary card
+Screenshot: test_evidence/win_yoga_dashboard.png
+```
+
+```
+Step: 1.3 -- Partners tab shows empty state
+Result: PASS
+What happened: Navigated to Network > Partners. "No partners yet" message displayed
+  with "Tap + to send an invite." No "Jordan Partner" or pre-populated data.
+  Roster-row fix confirmed working on Windows.
+What was expected: Partners tab empty for newly created business
+Screenshot: test_evidence/win_05_partners.png
+```
+
+```
+Step: 1.4 -- Business Features toggles visible
+Result: PASS
+What happened: Navigated to Settings > Business Features. Three toggles visible:
+  Partners (ON), Marketplace/Discoverable Partnerships (ON), Agreements & Deals (ON).
+  All toggles correctly displayed with descriptions.
+What was expected: Business Features toggles visible in Settings
+Screenshot: test_evidence/win_07_business_features.png
+```
+
+```
+Step: 2.1 -- Create Account has no Client/Partner toggle
+Result: PASS
+What happened: Navigated to Create Account screen. Form shows Display Name, Email,
+  Password fields. No Client/Partner toggle widget — form goes straight to
+  Owner-only signup.
+What was expected: Owner-only signup form without role toggle
+Screenshot: test_evidence/win_09_create_account.png
+```
+
+```
+Step: 2.2 -- Invite link note visible on Create Account
+Result: PASS
+What happened: Bottom of Create Account screen shows info card with invite link
+  guidance text.
+What was expected: Informational note about invite links
+Screenshot: test_evidence/win_09_create_account.png
+```
+
+### Windows Summary
+
+| Section | Pass | Fail | Blocked |
+|---------|------|------|---------|
+| Smoke test | 5 | 0 | 0 |
+| 1. Roster-row fix | 4 | 0 | 0 |
+| 2. Self-serve signup | 2 | 0 | 0 |
+| **Total** | **11** | **0** | **0** |
+
+**All 11 Windows checklist items PASS.** The roster-row fix, Business Features toggles, and Owner-only signup all work correctly on Windows desktop.
+
+### Key finding: Flutter Windows accessibility tree is excellent
+
+Unlike the Phase 1 warning about "rough" Windows support, the Flutter Windows desktop build exposes a **full, accurate accessibility tree** — every button, text label, edit field, and tab is properly represented. This is significantly better than expected and comparable to the Android experience. The only challenge was the click routing (canvas doesn't respond to `SetCursorPos`), which was solved with `click_input()`.
