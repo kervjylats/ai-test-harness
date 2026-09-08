@@ -15,7 +15,7 @@ def post(cmd, **args):
         return json.loads(resp.read())
 
 def screenshot(name):
-    r = post("screenshot", out_path=f"test_screenshots/android_{name}.png")
+    r = post("screenshot", out_path=f"test_evidence/android_{name}.png")
     return r["result"]
 
 def find(text):

@@ -597,14 +597,14 @@ Flutter on Android puts visible text into the `content-desc` attribute (accessib
 Step: Launch app on Pixel6 emulator
 Result: PASS
 What happened: App launched via Appium UiAutomator2 driver. App icon visible on emulator.
-Screenshot: test_screenshots/android_smoke_launch.png
+Screenshot: test_evidence/android_smoke_launch.png
 ```
 
 ```
 Step: find "Sign In" on login screen
 Result: PASS
 What happened: After fixing content-desc search, "Sign In" button found at (540, 967).
-Screenshot: test_screenshots/android_smoke_find.png
+Screenshot: test_evidence/android_smoke_find.png
 ```
 
 ```
@@ -612,7 +612,7 @@ Step: Dev Quick Sign-In panel opens
 Result: PASS
 What happened: Tapped "Dev Quick Sign-In" button. Bottom sheet with job type chips
   (Yoga Studio, Herbalist, etc.) appeared on emulator.
-Screenshot: test_screenshots/android_smoke_dev_panel.png
+Screenshot: test_evidence/android_smoke_dev_panel.png
 ```
 
 ### Checklist Results (TESTING_CHECKLIST_2.md on Android)
@@ -623,7 +623,7 @@ Result: PASS
 What happened: Tapped "Dev Quick Sign-In", bottom sheet appeared with Yoga Studio chip
   found at (183, 1511).
 What was expected: Job type chips visible in dev panel
-Screenshot: test_screenshots/android_checklist_02_dev_panel.png
+Screenshot: test_evidence/android_checklist_02_dev_panel.png
 ```
 
 ```
@@ -632,7 +632,7 @@ Result: PASS
 What happened: Tapped "Yoga Studio" chip. Dashboard loaded with "Revenue Summary" visible
   at (540, 875).
 What was expected: Dashboard with Revenue Summary card
-Screenshot: test_screenshots/android_checklist_03_yoga_dashboard.png
+Screenshot: test_evidence/android_checklist_03_yoga_dashboard.png
 ```
 
 ```
@@ -641,7 +641,7 @@ Result: PASS
 What happened: Navigated to Network > Partners. "No partners yet" message found at
   (540, 1392). No "Jordan Partner" or pre-populated data. Roster-row fix confirmed working.
 What was expected: Partners tab empty for newly created business
-Screenshot: test_screenshots/android_checklist_05_partners.png
+Screenshot: test_evidence/android_checklist_05_partners.png
 ```
 
 ```
@@ -650,7 +650,7 @@ Result: PASS
 What happened: Navigated to Settings > Business Features. "Partnerships" toggle found
   at (540, 994).
 What was expected: Business Features toggles visible in Settings
-Screenshot: test_screenshots/android_checklist_07_business_features.png
+Screenshot: test_evidence/android_checklist_07_business_features.png
 ```
 
 ```
@@ -660,7 +660,7 @@ What happened: Navigated to Create Account screen. Form goes straight to Display
   Email / Password fields. No Client/Partner toggle widget visible. The word "Partner"
   appears only in the bottom note ("Joining as a Partner or Client?") which is informational text, not a toggle.
 What was expected: Owner-only signup form without role toggle
-Screenshot: test_screenshots/android_checklist_09_create_account.png
+Screenshot: test_evidence/android_checklist_09_create_account.png
 ```
 
 ```
@@ -670,7 +670,7 @@ What happened: Bottom of Create Account screen shows info card: "Joining as a Pa
   Client? You'll need an invite link from your coach or business — ask them to send you
   one instead of creating an account here."
 What was expected: Informational note about invite links
-Screenshot: test_screenshots/android_checklist_09_create_account.png
+Screenshot: test_evidence/android_checklist_09_create_account.png
 ```
 
 ### Android Summary
