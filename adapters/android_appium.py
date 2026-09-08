@@ -4,11 +4,10 @@ adapters/android_appium.py
 Drives a Flutter (or Expo/React Native — Appium doesn't care) app on an
 Android emulator via Appium's UiAutomator2 driver.
 
-⚠️ STATUS: scaffolded, not verified — I have no Android emulator or Appium
-server available in the sandbox this was written in. Structurally this
-follows Appium's standard Python-client pattern correctly, but budget a
-first real run to iron out capability details for your specific setup
-(emulator name, app path) before trusting it unattended.
+Flutter on Android renders text to a canvas and exposes it via the
+accessibility tree as `content-desc` (content description), NOT as the
+`text` attribute.  This adapter searches `content-desc` first, then
+falls back to `text` and `hint` for native widgets.
 
 One-time setup on YOUR machine:
     npm install -g appium
@@ -16,17 +15,12 @@ One-time setup on YOUR machine:
     pip install Appium-Python-Client
     appium                      # starts the Appium server, leave running
     # separately: have your Android emulator already running
-    #   (Android Studio > Device Manager > launch one), or
-    #   `emulator -avd <your_avd_name>` from the command line
 
 Project config keys this adapter reads:
     "apk_path":     path to a debug APK
-                    (flutter build apk --debug, or Expo's local dev build)
     "app_package":  Android package name, e.g. "com.yourcompany.app"
-    "app_activity": usually ".MainActivity" — check your
-                    android/app/src/main/AndroidManifest.xml if unsure
-    "device_name":  whatever your emulator calls itself in
-                    `adb devices` (e.g. "emulator-5554")
+    "app_activity": usually ".MainActivity"
+    "device_name":  whatever your emulator calls itself in `adb devices`
     "appium_url":   defaults to http://localhost:4723 if omitted
 """
 
@@ -51,8 +45,6 @@ class AndroidAppiumAdapter(Adapter):
         options.app = config["apk_path"]
         options.app_package = config["app_package"]
         options.app_activity = config["app_activity"]
-        # Flutter/RN apps need a beat after install+launch before the
-        # widget tree is fully up — tune this if your app is heavier.
         options.new_command_timeout = 120
 
         appium_url = config.get("appium_url", "http://localhost:4723")
@@ -63,30 +55,71 @@ class AndroidAppiumAdapter(Adapter):
         return out_path
 
     def find_text(self, text: str) -> dict | None:
-        # UiAutomator2's textContains() reads Android's accessibility
-        # tree — Flutter populates this automatically once an
-        # accessibility service (which Appium counts as) is attached, so
-        # this should "just work" the same way TalkBack would see the app.
-        try:
-            el = self._driver.find_element(
-                AppiumBy.ANDROID_UIAUTOMATOR,
-                f'new UiSelector().textContains("{text}")',
-            )
-        except Exception:
-            return None
-        rect = el.rect  # {'x', 'y', 'width', 'height'}
-        return {
-            "x": int(rect["x"] + rect["width"] / 2),
-            "y": int(rect["y"] + rect["height"] / 2),
-            "matched": text,
-        }
+        """Search for `text` on screen.  Flutter on Android puts visible
+        text into `content-desc`, so we try three selectors in order:
+          1. descriptionContains  (Flutter's content-desc)
+          2. textContains         (native widgets)
+          3. text (exact)         (fallback)
+        """
+        selectors = [
+            f'new UiSelector().descriptionContains("{text}")',
+            f'new UiSelector().textContains("{text}")',
+            f'new UiSelector().text("{text}")',
+        ]
+        for sel in selectors:
+            try:
+                el = self._driver.find_element(
+                    AppiumBy.ANDROID_UIAUTOMATOR, sel
+                )
+                rect = el.rect
+                return {
+                    "x": int(rect["x"] + rect["width"] / 2),
+                    "y": int(rect["y"] + rect["height"] / 2),
+                    "matched": text,
+                }
+            except Exception:
+                continue
+        return None
+
+    def find_in_region(self, text: str, region: dict) -> dict | None:
+        """Find `text` only within a bounding box.
+        region = {"x1", "y1", "x2", "y2"}
+        Returns match dict or None."""
+        selectors = [
+            f'new UiSelector().descriptionContains("{text}")',
+            f'new UiSelector().textContains("{text}")',
+            f'new UiSelector().text("{text}")',
+        ]
+        for sel in selectors:
+            try:
+                els = self._driver.find_elements(
+                    AppiumBy.ANDROID_UIAUTOMATOR, sel
+                )
+                for el in els:
+                    r = el.rect
+                    cx = r["x"] + r["width"] / 2
+                    cy = r["y"] + r["height"] / 2
+                    if (region["x1"] <= cx <= region["x2"] and
+                            region["y1"] <= cy <= region["y2"]):
+                        return {
+                            "x": int(cx), "y": int(cy),
+                            "matched": text,
+                        }
+            except Exception:
+                continue
+        return None
+
+    def tap_in_region(self, text: str, region: dict) -> dict | None:
+        """Find `text` in region and tap it. Returns match or None."""
+        result = self.find_in_region(text, region)
+        if result:
+            self.tap(result["x"], result["y"])
+        return result
 
     def tap(self, x: int, y: int) -> None:
         self._driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
 
     def type_text(self, text: str) -> None:
-        # Requires a field to already have focus (tap it first via
-        # find_text + tap, same as every other adapter's convention).
         active = self._driver.switch_to.active_element
         active.send_keys(text)
 

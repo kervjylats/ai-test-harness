@@ -1,0 +1,7 @@
+{
+  "platform": "android",
+  "apk_path": "C:\\DEV\\Projects\\personal-wellness-trainer-main\\build\\app\\outputs\\flutter-apk\\app-debug.apk",
+  "app_package": "com.example.personal_wellness_trainer",
+  "app_activity": ".MainActivity",
+  "device_name": "emulator-5554"
+}

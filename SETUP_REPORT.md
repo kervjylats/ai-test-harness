@@ -505,6 +505,7 @@ Screenshot: test_screenshots/client_profile.png
 | `testctl.py` | Added no-adapter guard (400 error), auto-close stale adapter on relaunch; added `find_in_region` and `tap_in_region` server commands + CLI subparsers |
 | `adapters/base.py` | Added optional `find_in_region()` and `tap_in_region()` methods with `NotImplementedError` defaults |
 | `adapters/web_playwright.py` | Flutter accessibility tree activation, `textContent` search, role-based checkbox/tab mapping, off-screen scroll handling, `find_in_region()`, `tap_in_region()` |
+| `adapters/android_appium.py` | Added `content-desc` search (Flutter Android text), `find_in_region()`, `tap_in_region()` |
 | `master_test.py` | Full automated test script (created for this run) |
 
 ---
@@ -572,3 +573,112 @@ Screenshot: test_evidence/qa_console_4_panels.png
   - Canvas hit-test coordinates for elements inside panels don't match visual positions
   - Dev Quick Sign-In bottom sheet chips can be clicked (pointer-events bypass) but the Flutter tap handler doesn't fire
   - This is a known limitation of driving Flutter Web with Playwright -- not an app bug
+
+---
+
+## Phase 2 — Android Adapter (2026-09-07)
+
+### Setup
+
+- **Appium**: v3.7.0 running on port 4723 (started via `npx appium`)
+- **Driver**: `appium-uiautomator2-driver@8.6.1`
+- **Python client**: `Appium-Python-Client==6.0.0`
+- **Emulator**: Pixel6 (`emulator-5554`)
+- **APK**: `app-debug.apk` built from Flutter source
+- **Adapter**: `adapters/android_appium.py` with `content-desc` search for Flutter text
+
+### Android Adapter Bug Fix
+
+Flutter on Android puts visible text into the `content-desc` attribute (accessibility content description), NOT the `text` attribute. The original `android_appium.py` only searched `textContains`, so it found nothing. Fixed to search `descriptionContains` (content-desc) first, then `textContains`/`text` as fallbacks.
+
+### Smoke Test Results
+
+```
+Step: Launch app on Pixel6 emulator
+Result: PASS
+What happened: App launched via Appium UiAutomator2 driver. App icon visible on emulator.
+Screenshot: test_screenshots/android_smoke_launch.png
+```
+
+```
+Step: find "Sign In" on login screen
+Result: PASS
+What happened: After fixing content-desc search, "Sign In" button found at (540, 967).
+Screenshot: test_screenshots/android_smoke_find.png
+```
+
+```
+Step: Dev Quick Sign-In panel opens
+Result: PASS
+What happened: Tapped "Dev Quick Sign-In" button. Bottom sheet with job type chips
+  (Yoga Studio, Herbalist, etc.) appeared on emulator.
+Screenshot: test_screenshots/android_smoke_dev_panel.png
+```
+
+### Checklist Results (TESTING_CHECKLIST_2.md on Android)
+
+```
+Step: 1.1 -- Dev Quick Sign-In panel shows job type chips
+Result: PASS
+What happened: Tapped "Dev Quick Sign-In", bottom sheet appeared with Yoga Studio chip
+  found at (183, 1511).
+What was expected: Job type chips visible in dev panel
+Screenshot: test_screenshots/android_checklist_02_dev_panel.png
+```
+
+```
+Step: 1.2 -- Yoga Studio dashboard loads
+Result: PASS
+What happened: Tapped "Yoga Studio" chip. Dashboard loaded with "Revenue Summary" visible
+  at (540, 875).
+What was expected: Dashboard with Revenue Summary card
+Screenshot: test_screenshots/android_checklist_03_yoga_dashboard.png
+```
+
+```
+Step: 1.3 -- Partners tab shows empty state
+Result: PASS
+What happened: Navigated to Network > Partners. "No partners yet" message found at
+  (540, 1392). No "Jordan Partner" or pre-populated data. Roster-row fix confirmed working.
+What was expected: Partners tab empty for newly created business
+Screenshot: test_screenshots/android_checklist_05_partners.png
+```
+
+```
+Step: 1.4 -- Business Features toggles visible
+Result: PASS
+What happened: Navigated to Settings > Business Features. "Partnerships" toggle found
+  at (540, 994).
+What was expected: Business Features toggles visible in Settings
+Screenshot: test_screenshots/android_checklist_07_business_features.png
+```
+
+```
+Step: 2.1 -- Create Account has no Client/Partner toggle
+Result: PASS
+What happened: Navigated to Create Account screen. Form goes straight to Display Name /
+  Email / Password fields. No Client/Partner toggle widget visible. The word "Partner"
+  appears only in the bottom note ("Joining as a Partner or Client?") which is informational text, not a toggle.
+What was expected: Owner-only signup form without role toggle
+Screenshot: test_screenshots/android_checklist_09_create_account.png
+```
+
+```
+Step: 2.2 -- Invite link note visible on Create Account
+Result: PASS
+What happened: Bottom of Create Account screen shows info card: "Joining as a Partner or
+  Client? You'll need an invite link from your coach or business — ask them to send you
+  one instead of creating an account here."
+What was expected: Informational note about invite links
+Screenshot: test_screenshots/android_checklist_09_create_account.png
+```
+
+### Android Summary
+
+| Section | Pass | Fail | Blocked |
+|---------|------|------|---------|
+| 1. Roster-row fix | 4 | 0 | 0 |
+| 2. Self-serve signup | 2 | 0 | 0 |
+| **Total** | **6** | **0** | **0** |
+
+**All 6 Android checklist items PASS.** The roster-row fix, Business Features toggles, and Owner-only signup all work correctly on Android.
