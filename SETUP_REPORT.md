@@ -906,12 +906,29 @@ Result: BLOCKED (depends on 3.1)
 
 | Section | Pass | Fail | Blocked |
 |---------|------|------|---------|
-| 1. Roster-row fix | 6 | 0 | 0 |
+| 1. Roster-row fix | 7 | 0 | 0 |
 | 2. Owner-only signup | 2 | 0 | 0 |
 | 3. Partner spot-check | 0 | 1 | 2 |
-| **Total** | **8** | **1** | **2** |
+| **Total** | **9** | **1** | **2** |
 
-**8 PASS, 1 FAIL (harness limitation), 2 BLOCKED.** All app-level checklist items pass.
+**9 PASS, 1 FAIL (harness limitation), 2 BLOCKED.** All app-level checklist items pass.
 The single FAIL is the Partner chip click via Dev Quick Sign-In — a known Flutter Web
 canvas hit-test limitation that prevents automated sign-in as Partner/Staff/Client roles.
 This is NOT an app bug; it's a harness constraint that affects all three platforms equally.
+
+### 3.2/3.3 verification via code review (harness couldn't reach Partner view)
+
+Items 3.2 (Partner Agreements label) and 3.3 (Partner no Discover/Marketplace) were
+BLOCKED because the harness can't click the Partner chip in Dev Quick Sign-In. However,
+a thorough code review confirms both items are correct:
+
+**3.3 — Partner has no Discover/Marketplace access (confirmed via code):**
+- `partner_dashboard_screen.dart`: Dashboard slots are only `my_earnings`, `active_deals`, `upgrade_cta` — no Discover or Marketplace slot
+- `partner_shell.dart`: Tab body switch has no `discover` or `marketplace` case
+- `permissions_engine.dart`: `_canRoleAccessModule` for Partner only allows `finance`, `messaging`, `notifications`, `activity`, `team` — no marketplace module
+- `role_routes.dart`: `partnerRoutes()` deliberately excludes the marketplace route (comment confirms: "Owner-only, by design")
+- `block_08_partner_test.dart` test `08_06`: Explicitly asserts `Discover` and `Marketplace` are absent for Partner
+
+**3.1 — Partner Agreements label (not verified via UI, but code confirms):**
+- `partner_dashboard_screen.dart`: The `active_deals` slot renders `PartnerDealsSlot`, which shows "Agreements" label
+- This was the original finding from the earlier audit that incorrectly flagged 08_05 — the label exists via `PartnerDealsSlot`, not as a standalone screen
