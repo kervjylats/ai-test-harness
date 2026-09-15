@@ -157,6 +157,18 @@ def _make_handler():
                         _State.adapter.tap(found["x"], found["y"])
                     self._reply({"ok": True, "result": found})
 
+                elif command == "tap_xy":
+                    _State.adapter.tap(int(args["x"]), int(args["y"]))
+                    self._reply({"ok": True, "result": {"x": int(args["x"]), "y": int(args["y"])}})
+
+                elif command == "navigate":
+                    _State.adapter.navigate(args["path"])
+                    self._reply({"ok": True, "result": f"navigated to {args['path']}"})
+
+                elif command == "js_eval":
+                    result = _State.adapter.js_eval(args["script"])
+                    self._reply({"ok": True, "result": result})
+
                 elif command == "close":
                     _State.adapter.close()
                     _State.adapter = None
@@ -229,6 +241,13 @@ def main():
         "region",
         help='JSON bounding box: {"x1":0,"y1":0,"x2":640,"y2":400}',
     )
+    p_navigate = sub.add_parser("navigate")
+    p_navigate.add_argument("path", help="Path to navigate to (e.g. /get-started)")
+    p_tap_xy = sub.add_parser("tap_xy")
+    p_tap_xy.add_argument("x", type=int)
+    p_tap_xy.add_argument("y", type=int)
+    p_js_eval = sub.add_parser("js_eval")
+    p_js_eval.add_argument("script", help="JavaScript code to evaluate")
     sub.add_parser("close")
 
     args = parser.parse_args()
@@ -251,6 +270,12 @@ def main():
     elif args.command == "tap_in_region":
         region = json.loads(args.region)
         result = _post(args.port, "tap_in_region", text=args.text, region=region)
+    elif args.command == "navigate":
+        result = _post(args.port, "navigate", path=args.path)
+    elif args.command == "js_eval":
+        result = _post(args.port, "js_eval", script=args.script)
+    elif args.command == "tap_xy":
+        result = _post(args.port, "tap_xy", x=args.x, y=args.y)
     else:
         result = _post(args.port, args.command)
 

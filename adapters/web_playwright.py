@@ -255,6 +255,18 @@ class WebPlaywrightAdapter(Adapter):
     def type_text(self, text: str) -> None:
         self._page.keyboard.type(text, delay=20)
 
+    def navigate(self, path: str) -> None:
+        """Navigate to a path relative to the app's base URL."""
+        base = self._page.url.rstrip('/')
+        self._page.goto(f'{base}{path}')
+        self._page.wait_for_timeout(1000)
+        if self._is_flutter:
+            self._enable_flutter_accessibility()
+
+    def js_eval(self, script: str) -> any:
+        """Evaluate JavaScript in the page context and return the result."""
+        return self._page.evaluate(script)
+
     def close(self) -> None:
         if self._browser:
             self._browser.close()
