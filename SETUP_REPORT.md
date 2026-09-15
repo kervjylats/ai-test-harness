@@ -950,39 +950,48 @@ Three new commands were added to the test harness during this session:
 
 ### Summary
 
-- Total flows tested: 7
-- Verified (mechanical + code review): 4
-- Verified (code review only): 2
-- Blocked (harness limitation): 1
+- Total flows: 7
+- **Mechanically verified (screenshot evidence):** 2 (Flows 1 partial, 3)
+- **Mechanically verified (page loads, no form interaction):** 1 (Flow 2 partial)
+- **Code review only (no UI testing):** 4 (Flows 4, 5, 6, 7)
+- **Blocked by harness:** 2 (Flows 1 form, 2 form)
+
+### Label Definitions
+
+- **PASS** = driven through the UI, produced a real screenshot showing the claimed result
+- **PASS (partial)** = some steps mechanically verified, others blocked by harness
+- **NOT TESTED MECHANICALLY** = code review conclusion only, no fresh UI interaction
+- **BLOCKED** = harness limitation prevented testing
 
 ### Results
 
-#### Flow 1: Owner self-signup via Dev Quick Sign-In
+#### Flow 1: Owner self-signup
 
 ```
 Step: Sign in as Owner via Dev Quick Sign-In → Yoga Studio
 Result: PASS
-What happened: Tapped Dev Quick Sign-In FAB → panel opened → tapped "Yoga Studio" chip →
-  Owner dashboard loaded showing "Dev Yoga Studio" with Revenue Summary (Net $182.00,
-  Gross $200.00, Commissions $18.00, 3 Transactions), Upcoming Content, Team.
-  Confirmed: dashboard loads correctly, business name/color match the job type config.
+Method: Mechanical — tapped Dev Quick Sign-In FAB, tapped "Yoga Studio" chip
+What happened: Owner dashboard loaded showing "Dev Yoga Studio" with Revenue Summary
+  (Net $182.00, Gross $200.00, Commissions $18.00, 3 Transactions), Upcoming Content,
+  Team. Dashboard loads correctly, business name/color match the job type config.
 What was expected: Owner dashboard loads with correct business data
 Screenshot: test_evidence/mock_rework_04_owner_dashboard.png
 ```
 
 ```
-Step: Create Account form field interaction
-Result: BLOCKED (harness limitation)
-What happened: Navigated to Create Account screen. Form fields (Display Name, Email,
-  Password) are not exposed in Flutter Web's accessibility tree — the canvas renderer
-  doesn't create DOM text nodes for form field labels. Tapping at approximate coordinates
-  and typing sends keyboard events to DOM INPUT elements that Flutter creates, but
-  Flutter's gesture arena doesn't always pass them to the correct text field. Validation
-  errors ("Activation Key is required", "Please enter a valid email address") appeared
-  even after typing values, indicating the DOM inputs and Flutter state aren't syncing.
+Step: Create Account form (real signup, not Dev Quick Sign-In)
+Result: BLOCKED
+Method: Navigated to Create Account screen, attempted to type into form fields
+What happened: Form fields (Display Name, Email, Password) are not exposed in Flutter
+  Web's accessibility tree. Tapping at approximate coordinates and typing sends keyboard
+  events to DOM INPUT elements, but Flutter's gesture arena doesn't pass them to the
+  correct text field. Validation errors appeared even after typing values — DOM inputs
+  and Flutter state aren't syncing.
 What was expected: Form fields should be fillable
-Note: This is a known Flutter Web canvas + Playwright limitation, not a code bug.
-  The form works correctly when clicked through manually in a real browser.
+Note: This is a Flutter Web canvas + Playwright limitation, not a code bug. The form
+  works correctly when clicked through manually in a real browser. The actual signup
+  logic (signUp(null) → free Owner) is verified correct via code review of
+  mock_auth_source.dart:139-151.
 ```
 
 #### Flow 2: Activation key redemption at /get-started
@@ -990,11 +999,11 @@ Note: This is a known Flutter Web canvas + Playwright limitation, not a code bug
 ```
 Step: Marketing page loads with correct sections
 Result: PASS
-What happened: Navigated to /get-started via GoRouter hash navigation. Page loaded
-  showing: headline ("Run your own wellness business — powered by our platform"),
-  subtitle ("Everything you need to manage clients, staff, and bookings, all in one
-  branded app"), "Already have an activation key?" section, Activate button, and
-  "Get in touch" contact button. All three sections confirmed present.
+Method: Mechanical — navigated to /get-started, verified visible text via js_eval
+What happened: Page loaded showing: headline ("Run your own wellness business — powered
+  by our platform"), subtitle, "Already have an activation key?" section, Activate
+  button, and "Get in touch" contact button. All three sections confirmed present via
+  accessibility tree text content.
 What was expected: Marketing page with headline, key field, contact section
 Screenshot: test_evidence/mock_rework_11_marketing_page.png
 ```
@@ -1002,133 +1011,140 @@ Screenshot: test_evidence/mock_rework_11_marketing_page.png
 ```
 Step: "Upgrade to Pro" button NOT visible for anonymous visitor
 Result: PASS
-What happened: Grepped all flt-semantics text content on /get-started page. "Upgrade"
-  and "Pro" keywords not found anywhere on the page. Confirms the upgrade section is
-  correctly hidden for unauthenticated visitors.
+Method: Mechanical — grepped all flt-semantics text content on /get-started page
+What happened: "Upgrade" and "Pro" keywords not found anywhere on the page. Confirms
+  the upgrade section is correctly hidden for unauthenticated visitors.
 What was expected: No upgrade button for anonymous visitors
 Screenshot: test_evidence/mock_rework_11_marketing_page.png (same — no upgrade visible)
 ```
 
 ```
-Step: Activation key form field interaction
-Result: BLOCKED (harness limitation — same as Flow 1)
-What happened: Clicked at approximate coordinates for Activation Key, Name, Email,
-  Password fields. DOM INPUT elements received focus and typed text appeared in
+Step: Fill activation key form and submit
+Result: BLOCKED
+Method: Attempted to type into form fields via tap_xy + type commands
+What happened: DOM INPUT elements received focus and typed text appeared in
   document.activeElement.value, but Flutter's validation still showed "Activation Key
-  is required" and "Please enter a valid email address" — the DOM values aren't
-  propagating to Flutter's internal state.
-What was expected: Form should accept typed input
-Note: Same Flutter Web canvas limitation as Flow 1. The mock source's signUp()
-  with redemptionCode='DEMO-YOGA-001' is verified correct via code review (see below).
-```
-
-```
-Step: Second use of same activation key correctly rejected (code review)
-Result: PASS (code review, not mechanical)
-What happened: mock_auth_source.dart:118-119 checks _redeemedDemoKeys.contains(redemptionCode)
-  and throws 'This activation key has already been used'. The Set _redeemedDemoKeys is
-  populated on line 136 after successful signup. This correctly prevents double-use.
-  The real trigger (triggers.sql:97-103) uses the atomic WHERE redeemed_by_user_id IS NULL
-  pattern — same as adjust_stock and redeem_loyalty_points.
-What was expected: Activation key can only be used once
+  is required" and "Please enter a valid email address" — DOM values aren't propagating
+  to Flutter's internal state. Same Flutter Web canvas limitation as Flow 1.
+What was expected: Form should accept typed input and submit
+Note: The actual activation key logic (signUp('DEMO-YOGA-001') → premium Owner,
+  double-use rejected) is verified correct via code review of mock_auth_source.dart:117-136
+  and triggers.sql:97-103.
 ```
 
 #### Flow 3: Marketing page section visibility
 
 ```
 Step: "Upgrade to Pro" shows ONLY for Partner
-Result: PASS (code review + mechanical)
-What happened: Confirmed via code review of marketing_landing_screen.dart:118-120:
-  canUpgrade = showUpgradeButton && authState is AuthAuthenticated &&
-  AppRole.fromString(authState.profile.role).isPartner. This means upgrade button
-  only shows when signed in as Partner. Mechanical test confirmed: anonymous visitor
-  does NOT see the upgrade button (see Flow 2 above).
+Result: PASS (partial)
+Method: Mechanical for anonymous (confirmed hidden), code review for Partner logic
+What happened: Anonymous visitor does NOT see the upgrade button (confirmed via
+  accessibility tree text search — see Flow 2). Code review of
+  marketing_landing_screen.dart:118-120 confirms canUpgrade requires
+  authState is AuthAuthenticated && AppRole.fromString(role).isPartner.
+  Could not mechanically verify the Partner-visible case because Dev Quick Sign-In
+  → Partner → navigate to /get-started was blocked by the harness (see Flow 5 notes).
 What was expected: Upgrade button only visible to Partners
 ```
 
 ```
 Step: Contact section always visible
 Result: PASS
+Method: Mechanical — "Get in touch" button visible in accessibility tree
 What happened: Marketing page screenshot shows "Get in touch" button visible for
-  anonymous visitor. Code review confirms showContact defaults to true and is
-  controlled by BuyerConfig.marketingLandingSettings['show_contact_section'].
+  anonymous visitor. Code review confirms showContact defaults to true.
 What was expected: Contact section visible
+Screenshot: test_evidence/mock_rework_11_marketing_page.png
 ```
 
 #### Flow 4: Partner inviting a Client
 
 ```
-Step: Partner can create invite for Client (code review)
-Result: PASS (code review)
-What happened: accept_invitation_screen.dart:107-176 handles both mock and real
-  invite flows. In mock mode, _acceptAsInvite calls TeamRepository.inviteMember()
-  with the link's targetRole, businessId, etc. The invite token is validated by
-  inviteLinkNotifierProvider.validateToken(). After acceptance, recordUse() is called
-  to increment use_count. The flow is complete and correct.
+Step: Partner can create invite for Client
+Result: NOT TESTED MECHANICALLY
+Method: Code review only — no UI interaction
+What happened: Code review of accept_invitation_screen.dart:107-176 confirms the
+  invite flow works: validateToken() → _acceptAsInvite() → TeamRepository.inviteMember()
+  → recordUse(). The mock source's inviteMember() creates a real team-member record.
+  Could not mechanically test because: (1) requires an Owner to first create an invite
+  link, (2) the QA Console's nested navigation was difficult to automate.
 What was expected: Partner can invite Client via invite link
+Note: This is the same code we already reviewed together earlier in this conversation.
+  No fresh testing was performed.
 ```
 
 #### Flow 5: Partner cannot invite another Partner
 
 ```
 Step: No UI path for Partner to invite Partner
-Result: PASS (code review)
-What happened: Confirmed via code review of partner_shell.dart and team_notifier.dart.
-  The Partner shell's Network screen only shows a "Clients" tab — no Partners tab.
-  The team_notifier.dart's inviteMember() method is only callable from the Owner shell's
-  Network screen. The Partner has no UI element to initiate a Partner invitation.
-  Additionally, the invite_links table's INSERT policy (schema.sql:283-286) requires
-  the caller to be in the same business — but even if a Partner could create a link,
-  the handle_new_user() trigger resolves role from the link's target_role, which is
-  set by the link creator (Owner), not the invitee.
+Result: NOT TESTED MECHANICALLY
+Method: Code review only — no UI interaction
+What happened: Code review of partner_shell.dart confirms the Partner shell's Network
+  screen only shows a "Clients" tab — no Partners tab. team_notifier.dart's
+  inviteMember() is only callable from the Owner shell. Could not mechanically verify
+  because Dev Quick Sign-In → Partner → navigate to Network was blocked by the harness
+  (the Dev Quick Sign-In panel's role chips weren't consistently clickable).
 What was expected: Partner has no way to invite another Partner
+Note: This is the same code we already reviewed together earlier in this conversation.
+  No fresh testing was performed.
 ```
 
 #### Flow 6: Invite-link redemption via universal code-entry screen
 
 ```
 Step: Universal code-entry screen handles invite tokens
-Result: PASS (code review)
-What happened: accept_invitation_screen.dart:88-104 shows the flow: user enters code
-  → validateToken() tries invite_links first → if valid, _acceptAsInvite() handles it
-  → if invalid, falls through to _acceptAsActivationKey(). This correctly handles both
-  invite tokens AND activation keys in one screen. The real mode path (line 150) calls
-  signUp(redemptionCode: link.token) which triggers handle_new_user() server-side.
+Result: NOT TESTED MECHANICALLY
+Method: Code review only — no UI interaction
+What happened: Code review of accept_invitation_screen.dart:88-104 confirms the
+  universal flow: enter code → validateToken() tries invite_links first → falls through
+  to activation key if invalid. Real mode calls signUp(redemptionCode: link.token)
+  which triggers handle_new_user() server-side. Could not mechanically test because
+  form fields aren't accessible via the harness.
 What was expected: Universal screen handles both invite tokens and activation keys
+Note: This is the same code we already reviewed together earlier in this conversation.
+  No fresh testing was performed.
 ```
 
 #### Flow 7: Client-invites-client referral chain
 
 ```
 Step: Client B's owner resolves to root Owner, not Client A
-Result: PASS (code review)
-What happened: handle_new_user() triggers.sql:60-71 resolves the referral chain:
-  - If target_role = 'client', look up the inviter's profile
-  - If inviter is also a client, use inviter's primary_partner_id (or fall back to
-    inviter's user_id if primary_partner_id is null)
-  - If inviter is NOT a client, use inviter's user_id as primary_partner_id
-  This correctly walks up to the root owner/partner. The same logic was previously
-  in accept_invitation_screen.dart's _resolveRealOwnerId — moved server-side for
-  security (clients can no longer assert their own business_id).
+Result: NOT TESTED MECHANICALLY
+Method: Code review only — no UI interaction
+What happened: Code review of triggers.sql:60-71 confirms the referral chain logic:
+  if target_role = 'client' and inviter is also a client, use inviter's
+  primary_partner_id (or fall back to inviter's user_id). This walks up to the root
+  owner/partner. Could not mechanically test because: (1) requires Owner → invite
+  Client A → Client A invites Client B, which is a multi-session flow, (2) the QA
+  Console's nested navigation was difficult to automate.
 What was expected: Referral chain resolves to root owner
+Note: This is the same code we already reviewed together earlier in this conversation.
+  No fresh testing was performed. Claude flagged this as needing real verification
+  against the actual referral-chain code — that verification has NOT been done yet.
 ```
 
 ### Known Harness Limitations
 
-1. **Flutter Web canvas form fields**: Text fields rendered on the canvas don't expose their labels in the accessibility tree. DOM INPUT elements that Flutter creates receive keyboard events but don't sync with Flutter's internal state. This affects ALL form-filling flows (signup, activation key redemption, invite code entry).
+1. **Flutter Web canvas form fields**: Text fields rendered on the canvas don't expose their labels in the accessibility tree. DOM INPUT elements that Flutter creates receive keyboard events but don't sync with Flutter's internal state. This affects ALL form-filling flows (signup, activation key redemption, invite code entry). The harness cannot mechanically test any flow that requires typing into a Flutter text field.
 
 2. **QA Console navigation**: The QA Console opens in a nested Navigator with 4 side-by-side panels. Each panel starts unauthenticated. Tapping between panels and signing in separately in each is complex to automate because the panels share the same DOM but have separate Flutter navigation states.
 
 3. **No RLS testing in mock mode**: Mock mode has no Row-Level Security, so security fixes (profiles INSERT policy, activation key race condition) can only be verified via code review, not mechanical testing.
 
-### Code Review Verification ( supplementing mechanical tests)
+### Honest Verification Summary
 
-| Flow | Mechanical | Code Review | Verdict |
-|------|-----------|-------------|---------|
-| 1. Owner self-signup | ✅ Dashboard loads | ✅ signUp(null) → free Owner | PASS |
-| 2. Activation key redemption | ✅ Page loads, sections correct | ✅ signUp(DEMO-YOGA-001) → premium Owner, double-use rejected | PASS |
-| 3. Upgrade button visibility | ✅ Not visible anonymous | ✅ isPartner check in code | PASS |
-| 4. Partner invites Client | ❌ Harness-limited | ✅ accept_invitation_screen + invite flow correct | PASS |
-| 5. Partner can't invite Partner | ❌ Harness-limited | ✅ No Partners tab in Partner shell | PASS |
-| 6. Universal code-entry screen | ❌ Harness-limited | ✅ Token → invite flow, code → activation flow | PASS |
-| 7. Referral chain resolution | ❌ Harness-limited | ✅ triggers.sql:60-71 walks to root owner | PASS |
+| Flow | What Was Actually Tested | Method | Verdict |
+|------|------------------------|--------|---------|
+| 1. Owner self-signup | Dashboard loads via Dev Quick Sign-In | Mechanical (screenshot) | **PASS** |
+| 1. Owner self-signup | Create Account form fields | Mechanical (blocked) | **BLOCKED** |
+| 2. Activation key | Marketing page loads, sections visible | Mechanical (screenshot) | **PASS** |
+| 2. Activation key | "Upgrade to Pro" hidden for anonymous | Mechanical (text search) | **PASS** |
+| 2. Activation key | Fill form and submit | Mechanical (blocked) | **BLOCKED** |
+| 2. Activation key | Double-use rejection | Code review only | **NOT TESTED** |
+| 3. Upgrade button visibility | Hidden for anonymous | Mechanical (text search) | **PASS** |
+| 3. Upgrade button visibility | Visible for Partner | Code review only | **NOT TESTED** |
+| 3. Contact section | Visible | Mechanical (screenshot) | **PASS** |
+| 4. Partner invites Client | Invite flow correctness | Code review only | **NOT TESTED** |
+| 5. Partner can't invite Partner | No Partners tab in Partner shell | Code review only | **NOT TESTED** |
+| 6. Universal code-entry | Token/activation key routing | Code review only | **NOT TESTED** |
+| 7. Referral chain | triggers.sql referral resolution | Code review only | **NOT TESTED** |
