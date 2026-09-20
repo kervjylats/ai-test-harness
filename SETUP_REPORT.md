@@ -1148,3 +1148,103 @@ Note: This is the same code we already reviewed together earlier in this convers
 | 5. Partner can't invite Partner | No Partners tab in Partner shell | Code review only | **NOT TESTED** |
 | 6. Universal code-entry | Token/activation key routing | Code review only | **NOT TESTED** |
 | 7. Referral chain | triggers.sql referral resolution | Code review only | **NOT TESTED** |
+
+---
+
+## Activation-Key Dialog Removal Verification (2026-09-20)
+
+Run via: opencode + mimo-v2.5-free
+Platform: web (Flutter Web release build, headless Chrome)
+Build: `flutter build web --release` served via `python -m http.server 8080`
+App commit: `78367db` — "Remove dead/redundant activation-key path (old license-key dialog)"
+
+### What Changed
+
+Claude removed the old `_ActivationDialog` from `auth_screen.dart` — the "Activate a Practice Key" button on the login screen. This was a redundant second activation-key path that bypassed the new unified redemption flow (`signUp(redemptionCode:)`). It was also broken in real mode (direct `profiles` insert with a deterministic fake UUID that would fail the `auth.users` FK constraint, no INSERT policy — flagged as Critical 4 in the Supabase review, never fixed because the new flow was meant to replace it entirely).
+
+**Files changed (commit 78367db):**
+- `lib/engine/auth/auth_screen.dart` — removed `_ActivationDialog` class, `onActivate` parameter, "Activate a Practice Key" button, `_showActivationSheet` method (121 lines deleted)
+- `lib/engine/auth/auth_repository.dart` — removed abstract `activateLicenseKey()` method
+- `lib/data/sources/supabase/supabase_auth_source.dart` — removed `activateLicenseKey()` implementation + `_deterministicUuid()` helper + `dart:convert` import (75 lines deleted)
+- `lib/data/sources/mock/mock_auth_source.dart` — removed mock `activateLicenseKey()` implementation (25 lines deleted)
+- `lib/engine/auth/auth_notifier.dart` — removed `activateLicenseKey()` notifier method (24 lines deleted)
+- `lib/engine/auth/marketing_landing_screen.dart` — `final` to `const` for settings variables (trivial)
+- `lib/engine/auth/accept_invitation_screen.dart` — added `const` to Text widget (trivial)
+
+### Verification Results
+
+#### Check 1: Login screen no longer shows "Activate a Practice Key"
+
+```
+Step: Navigate to login screen and verify visible buttons
+Result: PASS
+Method: Mechanical — launched browser, navigated to login, took screenshot
+What happened: Login screen shows exactly: "Sign In" button, "Forgot password?",
+  "Create account" (top row), "Have an invite code? Join here" (below). No
+  "Activate a Practice Key" button anywhere on the page.
+What was expected: Only "Create account" and "Have an invite code? Join here" as entry points
+Screenshot: test_evidence/activation_removal_01_login.png
+```
+
+#### Check 2: activateLicenseKey() genuinely gone from all layers
+
+```
+Step: Grep entire codebase for activateLicenseKey, _ActivationDialog,
+  _showActivationSheet, _deterministicUuid, onActivate
+Result: PASS
+Method: Code review — grep across all .dart files
+What happened: Zero live references found. Only 2 comment mentions remain:
+  - auth_screen.dart:18 — removal explanation comment
+  - auth_repository.dart:32 — removal explanation comment
+  Both SupabaseAuthSource and MockAuthSource still implement AuthRepository
+  correctly (method removed from abstract interface, so neither needs it).
+What was expected: No dangling references
+```
+
+#### Check 3: Compile/analyzer check
+
+```
+Step: dart analyze on the 5 changed files
+Result: PASS
+Method: mechanical — `dart analyze lib/engine/auth/auth_screen.dart
+  lib/engine/auth/auth_repository.dart lib/data/sources/supabase/supabase_auth_source.dart
+  lib/data/sources/mock/mock_auth_source.dart lib/engine/auth/auth_notifier.dart`
+What happened: "No issues found!" — zero errors, zero warnings, zero info messages.
+What was expected: Clean compile
+```
+
+#### Check 4: Marketing page /get-started still works
+
+```
+Step: Navigate to /get-started and verify page renders
+Result: PASS
+Method: Mechanical — js_eval hash navigation, screenshot
+What happened: Marketing page loads correctly showing:
+  - Headline: "Run your own wellness business — powered by our platform"
+  - Subtitle: "Everything you need to manage clients, staff, and bookings..."
+  - "Already have an activation key?" section with Activation Key, Your Name,
+    Email, Password fields and "Activate" button
+  - "Get in touch" contact button
+  - Back arrow (top left)
+  - NO "Upgrade to Pro" button (correctly hidden for anonymous)
+  This confirms the marketing_landing_screen.dart const-ification and the
+  auth_screen.dart removal didn't break routing or page rendering.
+What was expected: Marketing page fully intact
+Screenshot: test_evidence/activation_removal_02_marketing.png
+```
+
+### Honest Verification Summary
+
+| Check | Method | Verdict |
+|-------|--------|---------|
+| Login screen: no "Activate a Practice Key" | Mechanical (screenshot) | **PASS** |
+| Login screen: only 2 entry points visible | Mechanical (screenshot) | **PASS** |
+| activateLicenseKey() removed from AuthRepository | Code review (grep) | **PASS** |
+| activateLicenseKey() removed from SupabaseAuthSource | Code review (grep) | **PASS** |
+| activateLicenseKey() removed from MockAuthSource | Code review (grep) | **PASS** |
+| activateLicenseKey() removed from AuthNotifier | Code review (grep) | **PASS** |
+| _deterministicUuid() removed from SupabaseAuthSource | Code review (grep) | **PASS** |
+| dart analyze passes on all 5 files | Mechanical (tool) | **PASS** |
+| Marketing page /get-started still renders | Mechanical (screenshot) | **PASS** |
+| Marketing page sections intact (headline, key form, contact) | Mechanical (screenshot) | **PASS** |
+| No "Upgrade to Pro" for anonymous | Mechanical (screenshot) | **PASS** |
