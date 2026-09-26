@@ -1409,3 +1409,162 @@ What happened: The 2 failures are pre-existing — they also fail on the
 | flutter analyze clean | Mechanical | **PASS** |
 | flutter test full suite | Mechanical | **NOT TESTED** (2 pre-existing failures; see Check 10) |
 | Button label switching to "Activate" when code typed | Code review (+ can't type into canvas field) | **NOT TESTED** (harness limitation; logic unit-verified) |
+
+## Round 2 — Upgrade Split: "Upgrade to Pro" vs "Launch Your Own Business" (2026-09-26)
+
+Run via: opencode
+Platform: web (Flutter Web release build, headed Chrome)
+Build: `flutter build web` served via `python -m http.server 8080`
+App repo: `C:\DEV\Projects\personal-wellness-trainer-main` (post-Round 1)
+
+### What Changed
+
+The single `upgradeToPremium()` used to do two unrelated jobs. It's now split into two role-separated actions, and each one persists/logs itself.
+
+1. **`upgradeToPremium()` — Free Owner → Pro Owner only.** Owners stay in their **same** business (same `businessId`, roster untouched — strictly `planTier: 'premium'`). Still gated by the payment seam (`FreePaymentGateway`, "ships free"). Adds `setPlanTier()` to persist the tier (mock: SharedPreferences + in-memory + shared roster row; real: new SECURITY DEFINER `set_plan_tier()` RPC in `schema.sql`, because RLS + column grants make `plan_tier` API-unwritable for a reason). Note: RLS `with check` previously deliberately blocked self-upgrades; the RPC is the only sanctioned path.
+2. **`launchOwnBusiness()` — Associate → Owner of a brand-new FREE business.** Spins off `biz_spin_<userId>`, migrates the associate's clients across, sets `isNewOwner: true` → the router drops them into onboarding to brand the new business. The host's business is untouched. No payment (starts free; can upgrade later).
+3. **New owner entry point**: Free owners now see an **"Upgrade to Pro"** prompt in **Settings** (owners previously had none). Associates see **"Launch Your Own Business"** (config label "Launch Your Own Practice" for the yoga job) in the permanent partner-shell banner, the partner dashboard CTA, and Settings.
+4. **Dialogs**: Owner upgrade → the existing "Mock Billing Portal" simulation (label now fixed to "Upgrade to Pro", was reusing the associate label). Associate launch → free, so a lightweight **confirm dialog** ("Launch it") instead of billing. The partner-shell/dashboard CTAs call `launchOwnBusiness()` directly (permanent prompt, no friction).
+5. **Buyer-visible audit trail**: `recordUpgradeEvent()` appends to the `upgrade_events` table (`schema.sql`) / `MockAuthSource.upgradeEvents` for the buyer to review who upgraded vs launched.
+
+### Files Changed
+
+`auth_notifier.dart`, `auth_repository.dart`, `mock_auth_source.dart`, `supabase_auth_source.dart`, `settings_screen.dart`, `partner_shell.dart`, `partner_dashboard_screen.dart`, `config_schema.dart` (associate prompt copy default), `upgrade_prompt.dart` (comment), `supabase/schema.sql` (`upgrade_events` table + `set_plan_tier` RPC), new `test/unit/upgrade_launch_test.dart`.
+
+### Verification Results
+
+#### Check 1: Associate shell — "Launch Your Own Practice" prompt, action now launches a business
+
+```
+Step: Dev Quick Sign-In as Partner → partner shell; dump semantics + screenshot
+Result: PASS
+Method: Mechanical (semantics + screenshot)
+What happened: Permanent banner + dashboard CTA both read "Launch Your Own Practice"
+  (config-driven label). Tap "Get it →" on the banner.
+Screenshot: test_evidence/round2_01_partner_shell.png
+```
+
+```
+Step: Tap "Get it →" on the partner-shell banner
+Result: PASS
+Method: Mechanical (tap + URL)
+What happened: #/partner → #/onboarding ("What type of practice do you run?")
+   — the new owner's branding/onboarding step. Before Round 2 this tapped
+   through to the buyer-contact "own business" screen.
+Screenshot: test_evidence/round2_02_associate_launched_onboarding.png
+```
+
+#### Check 2: Free Owner — Settings now offers "Upgrade to Pro"
+
+```
+Step: Dev Quick Sign-In as Owner (Yoga) + navigate to Settings tab
+Result: PASS
+Method: Mechanical (semantics + screenshot)
+What happened: Settings shows the new "Upgrade to Pro" card (owners had no
+  upgrade entry before this round).
+Screenshot: test_evidence/round2_03_owner_settings_upgrade.png
+```
+
+```
+Step: Tap "Upgrade to Pro" → Mock Billing Portal dialog → "Simulate $49/mo Payment"
+Result: PASS
+Method: Mechanical (semantics)
+What happened: Dialog titled "Mock Billing Portal", label "Upgrade to Pro"
+  (was reusing the associate label "Launch Your Own Practice"), completes the
+  simulated payment.
+```
+
+```
+Step: After completing payment, return to Settings
+Result: PASS
+Method: Mechanical (semantics + screenshot)
+What happened: The "Upgrade to Pro" card is GONE — profile is now premium.
+Screenshot: test_evidence/round2_04_owner_settings_no_upgrade.png
+```
+
+#### Check 3: Associate — Settings confirm dialog ("Launch Your Own Business" / "Launch it")
+
+```
+Step: Dev Quick Sign-In as Partner → Settings tab → "Launch Your Own Practice" card
+Result: PASS
+Method: Mechanical (semantics + screenshot)
+What happened: An alert dialog titled "Launch Your Own Business" appears:
+  "Spin off your own free business — your clients come with you, instantly…"
+  with Cancel / "Launch it".
+Screenshot: test_evidence/round2_05_associate_settings_dialog.png
+```
+
+```
+Step: Tap "Launch it"
+Result: PASS
+Method: Mechanical (tap + URL)
+What happened: #/partner → #/onboarding (new free business, onboarding step)
+```
+
+#### Check 4: Upgrade persistence across "restart"
+
+```
+Step: flutter test test/unit/upgrade_launch_test.dart (7/7 pass)
+Result: PASS
+Method: Mechanical (unit test)
+What happened: signs up a free owner, upgrades to Pro, disposes the container,
+  restores twice from the same (mock) prefs — plan_tier stays 'premium'.
+NOT TESTED in the harness browser: the dev hands-on path signs in as
+"dev_yoga_studio" which is NOT a signUp()-created account, so setPlanTier's
+prefs lookup is intentionally a no-op for it (the dev-owner tier resets on
+hard reload). Persistence for real accounts is unit-verified here.
+```
+
+#### Check 5: Upgrade split behavior
+
+```
+Step: flutter test test/unit/upgrade_launch_test.dart
+Result: PASS (7/7)
+Method: Mechanical (unit test)
+What happened:
+  - upgradeToPremium: owner keeps businessId, planTier → premium, no role change
+  - upgradeToPremium: partner → no-op (role/business untouched, no event logged)
+  - launchOwnBusiness: partner → owner, free tier, new biz_spin_ businessId,
+    isNewOwner → true; launch event logged (to_role owner, to_tier free)
+  - launchOwnBusiness: owner → no-op
+```
+
+#### Check 6: Analyzer + full suite
+
+```
+Step: flutter analyze  →  No issues found!
+Step: flutter test     →  157 pass, 2 fail (same 2 pre-existing failures as
+  Round 1: auth_notifier_test devQuickSignIn flake; team_notifier_test
+  occupied-category invite. Both verified pre-existing on clean HEAD.)
+Result: PASS (no new failures)
+Method: Mechanical
+```
+
+### Honest Verification Summary (Round 2)
+
+| Check | Method | Verdict |
+|-------|--------|---------|
+| Associate shell shows "Launch Your Own Practice" prompt (banner + dashboard) | Mechanical (semantics/screenshot) | **PASS** |
+| Banner "Get it →" → launch → #/onboarding (new free business) | Mechanical (tap + URL) | **PASS** |
+| Free Owner Settings "Upgrade to Pro" entry | Mechanical (semantics/screenshot) | **PASS** |
+| Billing dialog label = "Upgrade to Pro" (not associate copy) | Mechanical (semantics) | **PASS** |
+| Payment completes → "Upgrade to Pro" card disappears (premium) | Mechanical (semantics/screenshot) | **PASS** |
+| Associate Settings confirm dialog "Launch Your Own Business" + "Launch it" | Mechanical (semantics/screenshot) | **PASS** |
+| Settings "Launch it" → #/onboarding | Mechanical (tap + URL) | **PASS** |
+| Owner upgrade keeps same business (no data loss) | Unit test | **PASS** |
+| Partner + upgradeToPremium = no-op (data loss / role change prevented) | Unit test | **PASS** |
+| Partner launch → free owner of new business (isNewOwner → onboarding) | Unit test | **PASS** |
+| Tier persists across restart for real signed-up accounts | Unit test | **PASS** (NOT TESTED in browser for dev-owner path; see Check 4) |
+| upgrade_events audit trail (table + mock log + RPC) | Code review / unit test (event assert) | **PARTIAL** — table + RPC are schema-only, no live Supabase to run them against |
+| flutter analyze clean | Mechanical | **PASS** |
+| flutter test full suite | Mechanical | **NOT TESTED** (same 2 pre-existing failures; flagged for Round 5) |
+
+### Notes / Deferred to Round 4
+
+- The landing page still contains an authenticated **`_UpgradeSection`** that can no
+  longer render (Round 1's 1.2 redirect sends every signed-in user away from
+  `/get-started`, and the section only shows when signed in). It's dead code now —
+  scheduled for removal in the Round 4 cleanup pass.
+- "Simulate $49/mo Payment" button copy is the pre-existing mock-billing
+  simulation; the actual payment seam ships Free (`FreePaymentGateway` always
+  returns true) — the button is the QA placeholder, kept as-is.
