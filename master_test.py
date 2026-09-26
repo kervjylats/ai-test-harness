@@ -593,26 +593,26 @@ def run_tests():
         page.wait_for_timeout(1500)
         enable_flutter_acc(page)
 
-        # Check Partners tab
-        find_and_click(page, "Partners")
+        # Check Associates tab
+        find_and_click(page, "Associates")
         page.wait_for_timeout(1500)
         enable_flutter_acc(page)
-        s_net = screenshot(page, f"3owner_{label.replace(' ', '_')}_partners")
-        partner_texts = get_all_text(page)
-        # Check for pre-populated entries (specific names like "Jordan Partner")
-        # Avoid false positives from tab labels like "Clients", "Partners", "Staff"
-        has_prepopulated = any("Jordan" in t for t in partner_texts)
+        s_net = screenshot(page, f"3owner_{label.replace(' ', '_')}_associates")
+        associate_texts = get_all_text(page)
+        # Check for pre-populated entries (specific names like "Jordan Associate")
+        # Avoid false positives from tab labels like "Clients", "Associates", "Staff"
+        has_prepopulated = any("Jordan" in t for t in associate_texts)
         record(f"Step 1-4", f"{label} ({job}) -- empty Network tabs",
                "pass" if not has_prepopulated else "fail",
                "Network tabs empty for new business", s_net,
-               f"Partner tab texts: {partner_texts[:5]}")
+               f"Associates tab texts: {associate_texts[:5]}")
 
         # Sign out
         sign_out(page)
         page.wait_for_timeout(2000)
 
-    # Steps 5-9: Direct-invite Partner path (Owner #3)
-    print("\n--- Direct-invite Partner Path ---\n")
+    # Steps 5-9: Direct-invite Associate path (Owner #3)
+    print("\n--- Direct-invite Associate Path ---\n")
 
     # Sign in as Owner #3 (Life Coach)
     page.mouse.click(1250, 770)
@@ -621,14 +621,14 @@ def run_tests():
     page.wait_for_timeout(3000)
     enable_flutter_acc(page)
 
-    # Step 5: Network → Partners → invite
+    # Step 5: Network → Associates → invite
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s5 = screenshot(page, "3owner_step5_partners")
+    s5 = screenshot(page, "3owner_step5_associates")
 
     # Look for invite button
     has_invite = find_and_click(page, "Invite") or find_and_click(page, "invite")
@@ -636,7 +636,7 @@ def run_tests():
     enable_flutter_acc(page)
     s5b = screenshot(page, "3owner_step5_invite_dialog")
     texts = get_all_text(page)
-    record("Step 5", "Owner #3 invites a Partner", "pass" if has_invite else "fail",
+    record("Step 5", "Owner #3 invites an Associate", "pass" if has_invite else "fail",
            "Invite dialog/link generated", s5b, f"Dialog texts: {texts[:8]}")
 
     # Try to copy/generate link
@@ -647,24 +647,24 @@ def run_tests():
     sign_out(page)
     page.wait_for_timeout(2000)
 
-    # Step 6: Sign in as Partner via Dev Quick Sign-In
+    # Step 6: Sign in as Associate via Dev Quick Sign-In
     page.mouse.click(1250, 770)
     page.wait_for_timeout(2000)
     enable_flutter_acc(page)
 
-    # Look for Partner role chip
-    find_and_click(page, "Partner")
+    # Look for Associate role chip
+    find_and_click(page, "Associate")
     page.wait_for_timeout(3000)
     enable_flutter_acc(page)
     s6 = screenshot(page, "3owner_step6_partner_dashboard")
     texts = get_all_text(page)
     has_owner_card = any("Owner" in t or "Life Coach" in t for t in texts)
-    record("Step 6", "Partner sees Owner card (not 'No owner yet')",
+    record("Step 6", "Associate sees Owner card (not 'No owner yet')",
            "pass" if has_owner_card else "fail",
            "Owner card visible at top of Network", s6,
            f"Texts: {texts[:8]}")
 
-    # Step 7: Partner invites a client
+    # Step 7: Associate invites a client
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
@@ -675,11 +675,11 @@ def run_tests():
     enable_flutter_acc(page)
     s7 = screenshot(page, "3owner_step7_partner_invite_client")
     texts = get_all_text(page)
-    record("Step 7", "Partner invites a client",
+    record("Step 7", "Associate invites a client",
            "pass" if has_invite_client else "fail",
            "Client invite dialog visible", s7, f"Texts: {texts[:8]}")
 
-    # Sign out Partner
+    # Sign out Associate
     sign_out(page)
     page.wait_for_timeout(2000)
 
@@ -692,7 +692,7 @@ def run_tests():
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s8 = screenshot(page, "3owner_step8_deal_banner")
@@ -702,10 +702,10 @@ def run_tests():
            "pass" if has_deal else "fail",
            "Propose a deal banner visible", s8, f"Texts: {texts[:8]}")
 
-    # Step 9: Partner can accept/decline deal
-    record("Step 9", "Partner can accept/decline deal",
+# Step 9: Associate can accept/decline deal
+    record("Step 9", "Associate can accept/decline deal",
            "pass" if has_deal else "blocked",
-           "Deal proposal visible to Partner", "",
+           "Deal proposal visible to Associate", "",
            "Requires completing step 8 flow first")
 
     sign_out(page)
@@ -723,17 +723,17 @@ def run_tests():
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
 
-    # Step 10: Discover new partners
+    # Step 10: Discover new associates
     has_discover = find_and_click(page, "Discover") or find_and_click(page, "discover")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s10 = screenshot(page, "3owner_step10_discover")
     texts = get_all_text(page)
-    record("Step 10", "Owner #1 discovers new partners",
+    record("Step 10", "Owner #1 discovers new associates",
            "pass" if has_discover else "fail",
            "Discover marketplace visible", s10, f"Texts: {texts[:8]}")
 
@@ -755,7 +755,7 @@ def run_tests():
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
 
@@ -769,13 +769,13 @@ def run_tests():
            "pass" if has_accept else "fail",
            "Request accepted, commission dialog", s11, f"Texts: {texts[:8]}")
 
-    # Step 12: Both sides confirm active partnership
+    # Step 12: Both sides confirm active collab
     s12 = screenshot(page, "3owner_step12_active")
     texts = get_all_text(page)
     has_active = any("Active" in t for t in texts)
-    record("Step 12", "Both sides confirm active partnership",
+    record("Step 12", "Both sides confirm active collab",
            "pass" if has_active else "fail",
-           "Partnership shows as Active", s12)
+           "Collab shows as Active", s12)
 
     # Step 13: Propose a deal between Owners
     has_deal2 = find_and_click(page, "Deal") or find_and_click(page, "Propose")
@@ -801,7 +801,7 @@ def run_tests():
     page.wait_for_timeout(3000)
     enable_flutter_acc(page)
 
-    # Step 14: Settings → Business Features → Partners off
+    # Step 14: Settings → Business Features → Collabs off
     find_and_click(page, "Settings")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
@@ -811,39 +811,39 @@ def run_tests():
     s14 = screenshot(page, "toggle_step14_business_features")
     texts = get_all_text(page)
 
-    # Try to toggle Partners off
-    find_and_click(page, "Partners")
+    # Try to toggle Collabs off
+    find_and_click(page, "Collabs")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s14b = screenshot(page, "toggle_step14_partners_off")
-    record("Step 14", "Business Features — toggle Partners off",
+    s14b = screenshot(page, "toggle_step14_collabs_off")
+    record("Step 14", "Business Features — toggle Collabs off",
            "pass" if has_bf else "fail",
-           "Partners toggle switched off", s14b, f"Texts: {texts[:8]}")
+           "Collabs toggle switched off", s14b, f"Texts: {texts[:8]}")
 
-    # Step 15: Partners back on
-    find_and_click(page, "Partners")
+    # Step 15: Collabs back on
+    find_and_click(page, "Collabs")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s15 = screenshot(page, "toggle_step15_partners_on")
-    record("Step 15", "Business Features — toggle Partners back on",
-           "pass", "Partners toggle restored", s15)
+    s15 = screenshot(page, "toggle_step15_collabs_on")
+    record("Step 15", "Business Features — toggle Collabs back on",
+           "pass", "Collabs toggle restored", s15)
 
-    # Step 16: Marketplace off, Partners on
+    # Step 16: Marketplace off, Collabs on
     find_and_click(page, "Marketplace")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s16 = screenshot(page, "toggle_step16_marketplace_off")
-    record("Step 16", "Marketplace off, Partners on",
+    record("Step 16", "Marketplace off, Collabs on",
            "pass", "Marketplace toggle off", s16)
 
-    # Step 17: Agreements off, Partners on
+    # Step 17: Agreements off, Collabs on
     find_and_click(page, "Marketplace")  # turn back on
     page.wait_for_timeout(1000)
     find_and_click(page, "Agreements")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s17 = screenshot(page, "toggle_step17_agreements_off")
-    record("Step 17", "Agreements off, Partners on",
+    record("Step 17", "Agreements off, Collabs on",
            "pass", "Agreements toggle off", s17)
 
     sign_out(page)
@@ -898,16 +898,16 @@ def run_tests():
            "pass" if any("Revenue" in t or "Transaction" in t for t in texts) else "fail",
            "Finance view with transactions", s)
 
-    # Network → Partners tab
+    # Network → Associates tab
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "owner_partners")
-    record("Owner", "Network → Partners tab loads",
-           "pass", "Partners tab visible", s)
+    s = screenshot(page, "owner_associates")
+    record("Owner", "Network → Associates tab loads",
+           "pass", "Associates tab visible", s)
 
     # Network → Staff tab
     find_and_click(page, "Staff")
@@ -948,22 +948,22 @@ def run_tests():
     page.wait_for_timeout(2000)
 
     # =====================================================================
-    # PARTNER ROLE CHECKLIST
+    # ASSOCIATE ROLE CHECKLIST
     # =====================================================================
-    print("\n=== PARTNER ROLE CHECKLIST ===\n")
+    print("\n=== ASSOCIATE ROLE CHECKLIST ===\n")
 
     page.mouse.click(1250, 770)
     page.wait_for_timeout(2000)
     enable_flutter_acc(page)
-    find_and_click(page, "Partner")
+    find_and_click(page, "Associate")
     page.wait_for_timeout(3000)
     enable_flutter_acc(page)
 
     # Dashboard
-    s = screenshot(page, "partner_dashboard")
+    s = screenshot(page, "associate_dashboard")
     texts = get_all_text(page)
     has_upgrade = any("Upgrade" in t or "upgrade" in t for t in texts)
-    record("Partner", "Dashboard loads with upgrade banner",
+    record("Associate", "Dashboard loads with upgrade banner",
            "pass" if has_upgrade else "fail",
            "Dashboard with upgrade banner", s, f"Texts: {texts[:6]}")
 
@@ -971,26 +971,26 @@ def run_tests():
     find_and_click(page, "Activity") or find_and_click(page, "Content")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "partner_activity")
-    record("Partner", "Activity view loads (view-only)",
+    s = screenshot(page, "associate_activity")
+    record("Associate", "Activity view loads (view-only)",
            "pass", "Activity view visible", s)
 
     # Finance
     find_and_click(page, "Finance") or find_and_click(page, "Revenue")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "partner_finance")
-    record("Partner", "Finance — partner-scoped view loads",
-           "pass", "Partner finance view", s)
+    s = screenshot(page, "associate_finance")
+    record("Associate", "Finance — associate-scoped view loads",
+           "pass", "Associate finance view", s)
 
     # Network
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "partner_network")
+    s = screenshot(page, "associate_network")
     texts = get_all_text(page)
     has_owner = any("Owner" in t for t in texts)
-    record("Partner", "Network — Owner shown as card at top",
+    record("Associate", "Network — Owner shown as card at top",
            "pass" if has_owner else "fail",
            "Owner card visible", s, f"Texts: {texts[:6]}")
 
@@ -1001,8 +1001,8 @@ def run_tests():
     has_upgrade = find_and_click(page, "Launch") or find_and_click(page, "Upgrade") or find_and_click(page, "Practice")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "partner_upgrade")
-    record("Partner", "Upgrade to Pro (Launch Your Own Practice)",
+    s = screenshot(page, "associate_upgrade")
+    record("Associate", "Upgrade to Pro (Launch Your Own Practice)",
            "pass" if has_upgrade else "fail",
            "Upgrade option visible in Settings", s)
 
@@ -1063,19 +1063,19 @@ def run_tests():
     record("Client", "Activity Hub — browse classes/sessions",
            "pass", "Activity Hub visible", s)
 
-    # Partners tab
-    find_and_click(page, "Network") or find_and_click(page, "Partners")
+    # Associates tab
+    find_and_click(page, "Network") or find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Partners")
+    find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "client_partners")
+    s = screenshot(page, "client_associates")
     texts = get_all_text(page)
     has_empty_state = any("No" in t or "empty" in t.lower() or "invite" in t.lower() for t in texts)
-    record("Client", "Partners tab loads with empty state / contacts",
+    record("Client", "Associates tab loads with empty state / contacts",
            "pass" if texts else "fail",
-           "Partners tab visible", s, f"Texts: {texts[:6]}")
+           "Associates tab visible", s, f"Texts: {texts[:6]}")
 
     # Payments
     find_and_click(page, "Payments") or find_and_click(page, "Finance")

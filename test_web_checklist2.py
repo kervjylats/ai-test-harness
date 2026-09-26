@@ -69,26 +69,26 @@ if yoga:
     results.append(record("1.2", "Yoga Studio dashboard loads", "pass" if dash else "fail",
         f"{dash}"))
 
-    # Network → Partners
+    # Network → Associates
     net = find("Network")
     if net:
         tap("Network")
         time.sleep(2)
         screenshot("04_network")
 
-        # Partners tab — look for partial text since Flutter splits DOM
-        partners = find("Partners")
-        if partners:
-            tap("Partners")
+        # Associates tab — look for partial text since Flutter splits DOM
+        associates = find("Associates")
+        if associates:
+            tap("Associates")
             time.sleep(1)
-            screenshot("05_partners")
+            screenshot("05_associates")
 
         # Check empty state — try multiple text variants
-        no_p = find_any("No partners", "No partners yet", "no partners", "Tap + to send")
+        no_p = find_any("No associates", "No associates yet", "no associates", "Tap + to send")
         has_jordan = find("Jordan")
         has_sam = find("Sam")
         has_riley = find("Riley")
-        results.append(record("1.3a", "Partners tab empty (no fake data)",
+        results.append(record("1.3a", "Associates tab empty (no fake data)",
             "pass" if (no_p and not has_jordan and not has_sam and not has_riley) else "fail",
             f"empty_state={no_p is not None}, jordan={has_jordan is not None}, sam={has_sam is not None}, riley={has_riley is not None}"))
 
@@ -130,17 +130,17 @@ if yoga:
             time.sleep(2)
             screenshot("09_business_features")
 
-            p_toggle = find_any("Partners", "Partnerships")
+            p_toggle = find_any("Collabs", "Collab")
             results.append(record("1.4a", "Business Features toggles visible",
                 "pass" if p_toggle else "fail",
                 f"{p_toggle is not None}"))
 
-            # Toggle Partners off then on, navigate away and back
+            # Toggle Collabs off then on, navigate away and back
             if p_toggle:
-                # Find toggle by looking for the switch control near "Partners"
-                toggle = find("Partners")
+                # Find toggle by looking for the switch control near "Collabs"
+                toggle = find("Collabs")
                 if toggle:
-                    tap("Partners")
+                    tap("Collabs")
                     time.sleep(1)
                     screenshot("10_toggled_off")
 
@@ -158,7 +158,7 @@ if yoga:
                         tap("Business Features")
                         time.sleep(2)
                         screenshot("11_business_features_after")
-                        p_toggle2 = find_any("Partners", "Partnerships")
+                        p_toggle2 = find_any("Collabs", "Collab")
                         results.append(record("1.4b", "Toggle sticks after navigation",
                             "pass" if p_toggle2 else "fail",
                             f"visible_after_nav={p_toggle2 is not None}"))
@@ -195,8 +195,8 @@ if create:
     time.sleep(2)
     screenshot("13_create_account")
 
-    # Step 5: No Client/Partner toggle — check for toggle/switch widgets
-    # The word "Partner" appears in the bottom note text, which is NOT a toggle.
+    # Step 5: No Client/Associate toggle — check for toggle/switch widgets
+    # The word "Associate" appears in the bottom note text, which is NOT a toggle.
     # A real toggle would be a separate interactive control above the form.
     # Check: form has Display Name + Email + Password (no role selector above them)
     has_name = find("Display Name")
@@ -204,12 +204,12 @@ if create:
     has_password = find("Password")
     # Look for a role toggle — would be something like "I am a" or role tabs
     role_toggle = find_any("I am a", "Sign up as", "Join as")
-    results.append(record("2.1", "No Client/Partner toggle (Owner-only form)",
+    results.append(record("2.1", "No Client/Associate toggle (Owner-only form)",
         "pass" if (has_name and has_email and has_password and not role_toggle) else "fail",
         f"name={has_name is not None}, email={has_email is not None}, pw={has_password is not None}, role_toggle={role_toggle is not None}"))
 
     # Step 6: Invite link note
-    invite = find_any("invite link", "Invite link", "Partner or Client")
+    invite = find_any("invite link", "Invite link", "Associate or Client")
     results.append(record("2.2", "Invite link note visible",
         "pass" if invite else "fail",
         f"{invite is not None}"))
@@ -218,11 +218,11 @@ else:
     results.append(record("2.2", "Invite link note", "blocked", "CA not found"))
 
 # ═══════════════════════════════════════════════════════════════════
-# SECTION 3: Partner spot-check (informational)
+# SECTION 3: Associate spot-check (informational)
 # ═══════════════════════════════════════════════════════════════════
-print("\n=== 3. PARTNER SPOT-CHECK ===\n")
+print("\n=== 3. ASSOCIATE SPOT-CHECK ===\n")
 
-# Note: Partner chip click via Dev Quick Sign-In doesn't work on Web
+# Note: Associate chip click via Dev Quick Sign-In doesn't work on Web
 # due to Flutter nested Navigator canvas hit-test limitation (known from Phase 1).
 # This is a harness limitation, not an app bug.
 # We'll attempt it but expect it to fail.
@@ -235,38 +235,38 @@ time.sleep(3)
 tap("Dev Quick Sign-In")
 time.sleep(2)
 
-partner = find("Partner")
-if partner:
-    tap("Partner")
+associate = find("Associate")
+if associate:
+    tap("Associate")
     time.sleep(5)
-    screenshot("14_partner_attempt")
+    screenshot("14_associate_attempt")
 
-    # Check if we actually got to the Partner dashboard
-    partner_dash = find_any("My Deal", "Agreements", "Partner")
+    # Check if we actually got to the Associate dashboard
+    partner_dash = find_any("My Deal", "Agreements", "Associate")
     dev_panel = find("Dev Quick Sign-In")
     if dev_panel:
-        results.append(record("3.1", "Partner sign-in via Dev Quick Sign-In",
+        results.append(record("3.1", "Associate sign-in via Dev Quick Sign-In",
             "fail",
             "HARNESS LIMITATION: Chip click doesn't trigger Flutter handler (nested Navigator canvas hit-test)"))
-        results.append(record("3.2", "Partner Agreements label", "blocked", "Partner not signed in"))
-        results.append(record("3.3", "Partner no Discover/Marketplace", "blocked", "Partner not signed in"))
+        results.append(record("3.2", "Associate Agreements label", "blocked", "Associate not signed in"))
+        results.append(record("3.3", "Associate no Discover/Marketplace", "blocked", "Associate not signed in"))
     else:
-        results.append(record("3.1", "Partner sign-in via Dev Quick Sign-In", "pass", "Signed in"))
+        results.append(record("3.1", "Associate sign-in via Dev Quick Sign-In", "pass", "Signed in"))
         # Check Agreements
         agreements = find("Agreements")
-        results.append(record("3.2", "Partner Agreements label",
+        results.append(record("3.2", "Associate Agreements label",
             "pass" if agreements else "fail",
             f"{agreements is not None}"))
         # Check no Discover/Marketplace
         discover = find("Discover")
         marketplace = find("Marketplace")
-        results.append(record("3.3", "Partner no Discover/Marketplace",
+        results.append(record("3.3", "Associate no Discover/Marketplace",
             "pass" if not discover and not marketplace else "fail",
             f"discover={discover is not None}, marketplace={marketplace is not None}"))
 else:
-    results.append(record("3.1", "Partner sign-in", "blocked", "Partner chip not found"))
-    results.append(record("3.2", "Partner Agreements", "blocked", "Not signed in"))
-    results.append(record("3.3", "Partner no Discover/Marketplace", "blocked", "Not signed in"))
+    results.append(record("3.1", "Associate sign-in", "blocked", "Associate chip not found"))
+    results.append(record("3.2", "Associate Agreements", "blocked", "Not signed in"))
+    results.append(record("3.3", "Associate no Discover/Marketplace", "blocked", "Not signed in"))
 
 # ═══════════════════════════════════════════════════════════════════
 # SUMMARY

@@ -1568,3 +1568,90 @@ Method: Mechanical
 - "Simulate $49/mo Payment" button copy is the pre-existing mock-billing
   simulation; the actual payment seam ships Free (`FreePaymentGateway` always
   returns true) — the button is the QA placeholder, kept as-is.
+
+## Round 3 — Display Terminology: "Partner"→"Associate", "Partnership"→"Collab" (2026-09-26)
+
+Run via: opencode
+Platform: web (Flutter Web release build, headed Chrome)
+Build: `flutter build web` served via `python -m http.server 8080`
+App repo: `C:\DEV\Projects\personal-wellness-trainer-main` (post-Round 2)
+
+### What Changed
+
+Display-only rename across the whole UI. DB roles (`role='partner'`), class/route
+names, config keys (`partnership_marketplace`, `partnersEnabled`), and
+`jobId:'partner'` are unchanged — only what a user sees was reworded.
+
+1. **Config terminology** (drives most labels): `assets/config/job_types.json`
+   (`terminology.partner` "Partner Studio"→"Associate Studio" ×2,
+   "Partner Coach"→"Associate Coach" etc. per job; `network` "Partners"→"Associates";
+   `agreement` "Partnership"→"Collab"), `platform_identity.json`
+   (`partner`→"Associate", `agreement`→"Collab"), `active_job.json`,
+   `config_schema.dart` default.
+2. **lib display strings** (30+ files): all user-facing "Partner"/"Partners"/"Partnership"
+   → "Associate"/"Associates"/"Collab". Highlights: owner dashboard team chips
+   "0 Associate", agreement slot "Active Collab", Network sub-tabs
+   [Associates, Staff, Clients], marketplace "Discover Associates" / "Open Collab
+   Slots" / "Confirm Collab", Business Features "Collabs" tile, invite dialog
+   "Associate or Client", settings "Turn Collabs, Marketplace, and Deals on or off".
+   Casing convention: mid-sentence noun = lowercase "collab" ("request a
+   collab."), titles/headlines/buttons = "Collab"/"Collabs".
+3. **Dev Quick Launch**: role chip label "Partner"→"Associate"
+   (`dev_quick_launch.dart`); keys `dev_role_partner` untouched so robot tests
+   still sign in.
+4. **Mock sample names**: "Jordan Partner"→"Jordan Associate", "Casey
+   Partner"→"Casey Associate" (mock_profiles/team/finance/notification/
+   messaging/invite sources).
+5. **Tests updated** to the new display words: `test/helpers/fake_config.dart`
+   (:197/:203), `integration_test/flows/block_02:27`, `block_04` (tab lists),
+   `block_06:35`, `block_08` ("no Associates tab" checks).
+6. **Harness updated**: `master_test.py` + `test_web_checklist2.py` label lookups
+   (Associates tab/chips, Collabs toggles), plus new `round3_check.py` spot-check.
+
+### Verification
+
+```
+Step: flutter analyze  →  No issues found!
+Step: flutter test     →  157 pass, 2 fail (same 2 pre-existing failures as
+  Round 1/2; NOT new).
+Step: flutter build web →  Built build\web
+Step: python round3_check.py → 5/5 pass (headless Chromium, semantics DOM)
+```
+
+Round 3 web spot-check (`round3_check.py`, evidence `test_evidence/round3_*.png`):
+
+| # | Check | Method | Verdict |
+|---|-------|--------|---------|
+| R3.1 | Dev sheet role chips: "Associate" present, "Partner" absent | Mechanical (semantics) | **PASS** |
+| R3.2 | Owner dashboard: "Associate" + "Active Collab", no legacy labels | Mechanical (semantics/screenshot) | **PASS** |
+| R3.3 | Network: "Associates" tab only (no "Partners"), Discover banner present | Mechanical (semantics/screenshot) | **PASS** |
+| R3.4 | Business Features: "Collabs" tile, no "Partners" | Mechanical (semantics/screenshot) | **PASS** |
+| R3.5 | Marketplace: "Associate Marketplace"/"Discover Associates" terminology, no legacy | Mechanical (semantics/screenshot, deep-link `#/owner/marketplace`) | **PASS** |
+
+### Honest Verification Summary (Round 3)
+
+| Check | Method | Verdict |
+|-------|--------|---------|
+| Config terminology (job/platform/active/default) renamed | Code review + grep (`assets` only the intended occurrences) | **PASS** |
+| lib display strings renamed | Code review + grep (no user-facing Partner/Partnership strings left) | **PASS** |
+| Harness + integration-test references renamed | Code review + grep (repo-wide: no "Partner" UI lookup in harness) | **PASS** |
+| flutter analyze clean | Mechanical | **PASS** |
+| flutter test full suite | Mechanical | **PARTIAL** — 157 pass / same 2 pre-existing failures (flagged Round 1/2) |
+| Integration tests (block_02/04/06/08) | Static (updated for new words) | **NOT TESTED** — not part of `flutter test`; run via `flutter test integration_test/...` on a device, deferred |
+| Associate-role tab-absence in browser | Static + unit coverage | **NOT TESTED** in browser (known harness limit: nested-Navigator chip clicks); covered by block_08 assertions |
+| "Partnership"→"Collab" on agreement/detail/deal/referral screens | Code review | **NOT TESTED** in browser (requires two Pro owners + live cross-tenant flow; same as Round 2 Step 11-13 caveat) |
+| Supabase `set_plan_tier` RPC / `upgrade_events` | Schema-only | **NOT TESTED** (no live Supabase) — unchanged since Round 2 |
+
+### Notes / Deferred to Round 4
+
+- Grep-verified: no remaining user-facing "Partner"/"Partners"/"Partnership"
+  strings in `lib/` display paths; doc markdown (README/CHANGELOG/etc.) left
+  untouched by design (domain-model docs, not app UI).
+- `_DiscoverPartnersBanner` / `_ProposeDealBanner` / `PartnershipRequest` /
+  `canInvitePartners` etc. are code identifiers and were deliberately NOT
+  renamed (display-only scope; DB/class/route strings stay stable).
+- `round3_check.py` is harness-owned; `master_test.py` is the canonical flow and
+  still has earlier-round staleness unrelated to terminology (QA Console UI,
+  invite flows) — flagged for the Round 4/5 cleanup pass.
+- Harness commit `36c9ac2` (Round 2) swept unrelated working-tree files; a
+  cleanup commit is still outstanding.

@@ -1,0 +1,37 @@
+[
+  {
+    "step": "R3.1",
+    "description": "Dev sheet role chips rename Partner\u2192Associate",
+    "result": "pass",
+    "notes": "'Associate' chip present=True, legacy=[]",
+    "screenshot": "test_evidence\\round3_dev_sheet_chips.png"
+  },
+  {
+    "step": "R3.2",
+    "description": "Owner dashboard: 'Associate'/'Collab' present, no legacy",
+    "result": "pass",
+    "notes": "Associate=True, Collab=True, legacy=[]",
+    "screenshot": "test_evidence\\round3_owner_dashboard.png"
+  },
+  {
+    "step": "R3.3",
+    "description": "Network: 'Associates' tab, no 'Partners' tab",
+    "result": "pass",
+    "notes": "Associates tab=True, Partners=[], Discover banner=True",
+    "screenshot": "test_evidence\\round3_network.png"
+  },
+  {
+    "step": "R3.4",
+    "description": "Business Features: 'Collabs' tile, no 'Partners'",
+    "result": "pass",
+    "notes": "Collabs=True, legacy=[]",
+    "screenshot": "test_evidence\\round3_business_features.png"
+  },
+  {
+    "step": "R3.5",
+    "description": "Marketplace: 'Associates' terminology, no legacy labels",
+    "result": "pass",
+    "notes": "Associate=True, Collab=False (content-dependent), legacy=[]",
+    "screenshot": "test_evidence\\round3_marketplace.png"
+  }
+]
