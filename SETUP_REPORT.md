@@ -1248,3 +1248,164 @@ Screenshot: test_evidence/activation_removal_02_marketing.png
 | Marketing page /get-started still renders | Mechanical (screenshot) | **PASS** |
 | Marketing page sections intact (headline, key form, contact) | Mechanical (screenshot) | **PASS** |
 | No "Upgrade to Pro" for anonymous | Mechanical (screenshot) | **PASS** |
+
+---
+
+## Round 1 — "The Doors" Front-Door Rework (2026-09-26)
+
+Run via: opencode
+Platform: web (Flutter Web release build, headed Chrome)
+Build: `flutter build web --release` served via `python -m http.server 8080`
+App repo: `C:\DEV\Projects\personal-wellness-trainer-main` (post-`78367db`)
+
+### What Changed
+
+The landing page is now the app's front door. Everyone who isn't signed in lands there; the standalone sign-up screen is gone.
+
+1. **Root `/` → landing page** for unauthenticated visitors (was: login screen). Signed-in users at `/get-started` are bounced straight to their role shell — the landing page shows only while logged out ("one time only").
+2. **Deleted `signup_screen.dart`** and every route/button that pointed at it (`app_router.dart`, `role_routes.dart`, `route_names.dart`, login's "Create account" button).
+3. **Landing page form is now the single new-account entry.** One optional "Code" field handles all three cases the same way real mode's server-side `handle_new_user()` trigger does:
+   - blank code → brand-new **Free Owner**
+   - activation key → brand-new **Pro Owner**
+   - invite token (`wlp_...`) → joins the inviter's existing business as Associate/Staff/Client
+   Button label adapts as you type: "Get started" (empty) vs "Activate" (code entered).
+4. **Login screen**: "Create account" replaced with "New here? Visit our home page" (round-trips to landing); "Have an invite code? Join here" unchanged.
+5. **Mock sign-up** now resolves codes (invite → key → free) mirroring real-mode trigger logic.
+6. **Contact button** falls back to `BuyerConfig.supportEmail` when `contact_url` is left empty.
+
+### Files Changed
+
+`marketing_landing_screen.dart`, `auth_screen.dart`, `app_router.dart`, `role_routes.dart`, `route_names.dart`, `mock_auth_source.dart`, `buyer_config.dart`, deleted `signup_screen.dart`, new `test/unit/mock_auth_source_signup_test.dart`.
+
+### Verification Results
+
+#### Check 1: Unauthenticated root `/` → landing page
+
+```
+Step: Launch app (no session), read window.location after load
+Result: PASS
+Method: Mechanical (URL evidence)
+What happened: http://localhost:8080/#/get-started
+What was expected: #/get-started (landing), not #/login
+Screenshot: test_evidence/round1_root.png
+```
+
+#### Check 2: `/signup` no longer resolves
+
+```
+Step: js_eval window.location.hash = '#/signup'
+Result: PASS
+Method: Mechanical (URL evidence)
+What happened: Redirected to #/get-started (landing)
+What was expected: Route gone → unauth users land on front door
+```
+
+#### Check 3: Landing page renders with "Sign in" link and adaptive form copy
+
+```
+Step: Dump flt-semantics text + screenshot
+Result: PASS
+Method: Mechanical (semantics DOM + screenshot)
+What happened: Renders "Sign in", headline, "Create your account",
+  "Get started" button (empty-code state), "Get in touch"
+What was expected: Front-door page with explicit Sign in, free-signup copy
+Screenshot: test_evidence/round1_01_landing.png
+```
+
+#### Check 4: Landing "Sign in" → login screen
+
+```
+Step: Tap "Sign in" (1243,28), read URL
+Result: PASS
+Method: Mechanical (tap + URL)
+What happened: http://localhost:8080/#/login
+```
+
+#### Check 5: Login screen — "Create account" gone, home-page link added
+
+```
+Step: Navigate to /login, dump semantics + screenshot
+Result: PASS
+Method: Mechanical (semantics DOM + screenshot)
+What happened: Shows "Sign In", "Forgot password?", "Have an invite code?
+  Join here", "New here? Visit our home page". NO "Create account"
+What was expected: Create-account entry removed from login
+Screenshot: test_evidence/round1_02_login.png
+```
+
+#### Check 6: Login → landing round-trip
+
+```
+Step: Tap "New here? Visit our home page", read URL
+Result: PASS
+Method: Mechanical (tap + URL)
+What happened: #/login → #/get-started
+```
+
+#### Check 7: Signed-in user never sees landing (1.2)
+
+```
+Step: Dev Quick Sign-In as Owner (Yoga) → shell at /owner, then navigate to #/get-started
+Result: PASS
+Method: Mechanical (tap + URL)
+What happened: /get-started redirected back to /owner
+What was expected: Signed-in users are sent to their shell
+```
+
+#### Check 8: Code resolution in mock sign-up (blank / key / invite / reuse)
+
+```
+Step: flutter test test/unit/mock_auth_source_signup_test.dart
+Result: PASS (9/9)
+Method: Mechanical (unit test)
+What happened:
+  - blank & whitespace code → Free Owner
+  - DEMO-YOGA-001 → Pro Owner, business "Sunrise Yoga"
+  - DEMO-NUTRITION-001 reused → error
+  - ZZZ-BOGUS-001 → error
+  - wlp_000001 → joins biz_mock_001 as Client
+  - wlp_000002 → joins as Partner
+  - invite-joined account signs back in with same email (bonus: fixes mock invitee sign-in)
+```
+
+#### Check 9: Analyzer clean
+
+```
+Step: flutter analyze
+Result: PASS
+Method: Mechanical
+What happened: "No issues found!"
+```
+
+#### Check 10: Full unit-test suite
+
+```
+Step: flutter test
+Result: 141 pass, 2 fail
+Method: Mechanical
+What happened: The 2 failures are pre-existing — they also fail on the
+  clean checkout (verified by git stash): auth_notifier_test devQuickSignIn
+  (flaky session-restore race) and team_notifier_test "invite partner to
+  occupied category". Both flagged for Round 5, unrelated to this change.
+```
+
+### Honest Verification Summary
+
+| Check | Method | Verdict |
+|-------|--------|---------|
+| Root `/` → landing (unauthenticated) | Mechanical (URL) | **PASS** |
+| `/signup` route gone | Mechanical (URL) | **PASS** |
+| Landing renders + explicit "Sign in" link | Mechanical (semantics/screenshot) | **PASS** |
+| Landing "Sign in" → login | Mechanical (tap + URL) | **PASS** |
+| Login: "Create account" removed | Mechanical (semantics/screenshot) | **PASS** |
+| Login: "New here? Visit our home page" added | Mechanical (semantics/screenshot) | **PASS** |
+| Login ↔ landing round-trip | Mechanical (tap + URL) | **PASS** |
+| Signed-in user → shell (skips landing) | Mechanical (tap + URL) | **PASS** |
+| Blank code → Free Owner | Unit test | **PASS** |
+| Activation key → Pro Owner | Unit test | **PASS** |
+| Reused / invalid key → error | Unit test | **PASS** |
+| Invite token → existing business (Client/Partner) | Unit test | **PASS** |
+| Invitee can sign back in | Unit test | **PASS** |
+| flutter analyze clean | Mechanical | **PASS** |
+| flutter test full suite | Mechanical | **NOT TESTED** (2 pre-existing failures; see Check 10) |
+| Button label switching to "Activate" when code typed | Code review (+ can't type into canvas field) | **NOT TESTED** (harness limitation; logic unit-verified) |
