@@ -1655,3 +1655,68 @@ Round 3 web spot-check (`round3_check.py`, evidence `test_evidence/round3_*.png`
   invite flows) — flagged for the Round 4/5 cleanup pass.
 - Harness commit `36c9ac2` (Round 2) swept unrelated working-tree files; a
   cleanup commit is still outstanding.
+
+## Round 4 — Canonical Suite Cleanup: honest PASS/BLOCKED (2026-09-27)
+
+Run via: opencode
+Platform: web (Flutter Web release build, headless Chromium)
+Build: `flutter build web` served via `python -m http.server 8080`
+App repo: `C:\DEV\Projects\personal-wellness-trainer-main` (post-Round 3)
+Harness: `master_test.py` (canonical flow)
+
+### What Changed (harness-only)
+
+`master_test.py` was reworked so every result is honest and reproducible:
+
+1. **`find_and_click` rewritten** (scroll-retry loop 6x wheel + re-snapshot;
+   aria-label matching FIRST since a text-only label node can sit OUTSIDE its
+   real hit area — e.g. the bottom-nav "Settings" label rect sits above the
+   tab's hit region, so text-method clicks no-op'd; interactive
+   checkbox/switch/tab/button nodes are chosen by smallest area, clicked via
+   semantics `el.click()` (works below the fold) or coordinate click for
+   tabs). Partial-text matches require smallest node and length < 300.
+2. **Dev Quick Sign-In reopened reliably** (retry loop) and its role chips are
+   exact `aria-label`s (probe-verified), so sign-in is deterministic — no
+   more index alignment with a pruned DOM.
+3. **Steps 8/9/11/12/13 converted to honest BLOCKED** — they need a real
+   invite-join link between two accounts, which dev identities cannot create.
+   The old false-positive (empty-state "request a collab" text) is gone.
+4. **Steps 14-17 (Business Features toggles)** now click the `role=switch`
+   nodes by aria-label (`Collabs\nAllow this business...`,
+   `Marketplace (Discoverable Collabs)...`, `Agreements & Deals...`) via
+   semantics clicks; the title text-node length filter that blocked the ~54-char
+   tile was replaced.
+5. **QA2/QA3(4x)/QA4 documented BLOCKED** — Flutter Web's nested-Navigator
+   semantics tree only exposes the first QA panel, so only one panel can be
+   mechanically driven.
+6. CC checks hardened: first-load waits, dashboard text waits, case-insensitive
+   comparisons.
+7. Associate dashboard banner check matches the real copy ("Launch Your Own
+   Practice" / "Start Your Own Business"), not a literal "Upgrade".
+
+### Verification (full canonical suite run)
+
+`
+TOTAL: 57 | PASS: 46 | FAIL: 0 | BLOCKED: 11
+`
+
+All cross-cutting checks (CC1-CC9) PASS. Owner flow Steps 1-7 PASS; Steps 8/9
+BLOCKED (need linked associate); Steps 10 PASS, 11-13 BLOCKED (need a second
+owner linked via invite-join); Steps 14-17 PASS (all four Business Features
+toggles verified on and off). Associate, 3-owner, staff and client checklists
+all PASS.
+
+### Remaining BLOCKED items (honest limits, not harness bugs)
+
+| # | Item | Why blocked |
+|---|------|-------------|
+| QA2, QA3\*4, QA4 | QA Console panels | Web semantics tree exposes only the first nested Navigator's panel |
+| Step 8/9 | 'Propose a deal' banner + accept/decline | Requires two accounts linked by real invite-join email flow |
+| Step 11/12/13 | Cross-owner marketplace request / active collab | Marketplace lists no compatible sellers without linked accounts |
+
+### Notes
+
+- `test_results.json` + `test_screenshots/` are gitignored working artifacts.
+- Round 3's outstanding cleanup commit is done here (probe scripts removed;
+  only `master_test.py` + this report committed).
+- Same 2 pre-existing `flutter test` failures, unchanged (Round 1/2/3).
