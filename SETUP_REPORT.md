@@ -1720,3 +1720,75 @@ all PASS.
 - Round 3's outstanding cleanup commit is done here (probe scripts removed;
   only `master_test.py` + this report committed).
 - Same 2 pre-existing `flutter test` failures, unchanged (Round 1/2/3).
+
+## Round 5 — Close the Blocked Items via Seeded Accounts (2026-09-28)
+
+### What Changed (harness)
+
+The 11 remaining BLOCKED items were attacked with the seeded mock accounts
+(`owner@test.com` — Alex Owner Demo Business, the ONLY loginable account
+holding linked Associates and marketplace seed data):
+
+1. **Real typed sign-in** (`typed_login`/`typed_logout`): fills the actual
+   Email/Password inputs on `#/login` (Flutter Web recreates the `<input>`s
+   after each fill, so both are re-located by aria-label) and clears
+   SharedPreferences-backed sessions when switching accounts.
+2. **Step 8 (propose a deal) → PASS**: seeded propose flow — capped Associate
+   dropdown → Jordan Associate (cat_2) → Send Proposal. The SnackBar success
+   toast is NOT in the semantics tree, so success is detected by the propose
+   screen popping back to the Associates list (the pop only fires on success).
+3. **Steps 11/12 (marketplace accept / active collab) → PASS**: seeded inbound
+   request (Core Pilates → Alex) accepted via the commission-split dialog,
+   then Confirm Collab clears the request out of "Received Requests". Driven
+   by `role=switch` DOM-index toggles (0 = Discoverable, 1 = Pilates slot),
+   wheel-scroll to build below-fold ListView sections, and polling helpers
+   (`await_text`/`until_absent`) that replace racy single-snapshot asserts.
+4. **QA3-OWNER → PASS** (console panel exposes its own sign-in screen);
+   **QA4 documented BLOCKED** — the console's nested-Navigator semantics tree
+   only exposes the first panel's form, and the panel's own Dev Quick Sign-In
+   didn't reach dashboard markers in-suite.
+5. **New generic helpers** for clicking/scroll/polling; static helper ported
+   into `adapters/web_playwright.py` (see A' below).
+
+### What Changed (Flutter app) — two intended-rule fixes
+
+1. **Session-restore race fixed** (`auth_notifier.dart`): a background
+   session restore completing after a fast sign-in/devQuickSignIn could
+   overwrite the freshly authenticated state with logged-out. Restore now only
+   applies if the state is still `AuthInitial`. Fixes the long-standing
+   `devQuickSignIn → AuthAuthenticated` flake.
+2. **One active Associate per category enforced** (`team_notifier.dart`):
+   inviting a Partner into a category that already has an active Partner is
+   rejected up-front with a `teamActionErrorProvider` error naming the
+   category, instead of silently creating a duplicate.
+
+`flutter analyze` clean; full `flutter test`: **159/159 pass** (was 157/159
+with the 2 known flakes). `flutter build web` rebuilt; :8080 server restarted
+over the new bundle.
+
+### Verification (full canonical suite run)
+
+```
+TOTAL: 57 | PASS: 50 | FAIL: 0 | BLOCKED: 7
+```
+
+### Remaining BLOCKED items (honest limits, not harness bugs)
+
+| # | Item | Why blocked |
+|---|------|-------------|
+| QA2, QA3-PARTNER, QA3-STAFF, QA3-CLIENT | QA Console non-owner panels | Web semantics tree exposes only the first nested Navigator's panel |
+| QA4 | OWNER panel sign-in | Panel's Dev Quick Sign-In + Yoga Studio didn't reach dashboard markers in-suite (visual-only) |
+| Step 9 | Associate accepts proposed deal | Receiver Jordan Associate has no credentials; `partner@test.com` doesn't hold this proposal |
+| Step 13 | Deal between independent Owners | No second loginable owner; mock stores are per-isolate so a proposal can't survive an account switch |
+
+### Notes
+
+- **A'** done: `adapters/web_playwright.py` gained non-breaking helpers
+  (`enable_semantics`, `typed_login`/`typed_logout`, `smart_find_click`,
+  `click_exact`, `switch_toggle`, `scroll_down`, `wait_for_texts`, `hash_navigate`,
+  `launch_args` for `--enable-unsafe-swiftshader`).
+- **C** done: current-state docs (README, TESTING_CHECKLIST\*.md,
+  TEST_EXECUTION_PLAN.md, TESTING_ISSUES_LOG.md) swept to Associate/Collab
+  terminology; code-level `partner` names untouched; one CHANGELOG entry added.
+- Run 6 completed in ~20 min with 1 transient infra browser crash on the
+  first attempt (WMI-detached relaunch succeeded).

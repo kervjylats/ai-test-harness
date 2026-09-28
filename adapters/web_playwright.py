@@ -70,6 +70,162 @@ class WebPlaywrightAdapter(Adapter):
         }""")
         self._page.wait_for_timeout(3500)
 
+    # ── Battle-tested Flutter Web helpers (ported from the PWT harness) ────
+    #
+    # These were validated against a live Flutter Web CanvasKit build:
+    #   * Session persists across reload when signing in via the real
+    #     Email/Password form -> typed_logout() must clear localStorage.
+    #   * Flutter re-creates the Email/Password <input>s after each fill, so
+    #     inputs are re-located by aria-label every time, with a settle gap.
+    #   * Switch toggles carry no aria-label in the DOM (their names live in
+    #     the accessibility tree), so they're toggled by DOM index instead.
+    #   * Long scrollable pages (ListView) build children lazily: sections
+    #     below the fold are only present after scroll_down().
+    #   * Headless Chromium needs --enable-unsafe-swiftshader for a reliable
+    #     Flutter boot; set it via config["launch_args"].
+
+    def _launch_args(self, config: dict) -> list:
+        return config.get("launch_args", []) or []
+
+    def launch(self, config: dict) -> None:
+        url = config["url"]
+        headless = config.get("headless", False)
+        self._is_flutter = config.get("flutter", True)  # default True for this project
+
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless=headless, args=self._launch_args(config))
+        self._page = self._browser.new_page(viewport={"width": 1280, "height": 800})
+        self._page.goto(url)
+        # Flutter Web boots into an empty canvas for a moment — give it
+        # room to actually paint before the first screenshot/find_text.
+        self._page.wait_for_timeout(3000)
+
+        if self._is_flutter:
+            self._enable_flutter_accessibility()
+
+    def enable_semantics(self, wait_ms: int = 700) -> None:
+        """Re-activate (or refresh) the Flutter semantics tree after heavy UI
+        changes. Cheap to call liberally between steps."""
+        self._page.evaluate("""() => {
+            const btn = document.querySelector('flt-semantics-placeholder');
+            if (btn) btn.click();
+        }""")
+        self._page.wait_for_timeout(wait_ms)
+
+    def inner_text(self) -> str:
+        """Full visible page text (Flutter semantics expose it as innerText)."""
+        return self._page.evaluate("document.body.innerText")
+
+    def wait_for_texts(self, needles: list[str], timeout_ms: int = 20000) -> bool:
+        """Poll innerText until ANY needle appears (case-insensitive).
+        Returns True on match, False on timeout."""
+        import time
+        lower = [n.lower() for n in needles]
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            txt = self.inner_text().lower()
+            if any(n in txt for n in lower):
+                return True
+            self._page.wait_for_timeout(500)
+        return False
+
+    def hash_navigate(self, hash_path: str, wait_ms: int = 5000) -> None:
+        """Client-side hash navigation (e.g. '#/owner/marketplace')."""
+        self._page.evaluate(f"""() => {{ window.location.hash = '{hash_path}'; }}""")
+        self._page.wait_for_timeout(wait_ms)
+        self.enable_semantics()
+
+    def smart_find_click(self, label: str, wait_ms: int = 2200) -> bool:
+        """Click the FIRST flt-semantics whose text/aria-label starts with
+        `label`. Prefix matching avoids both `includes` (which hits the big
+        page-aggregate node) and exact-match (labels often carry merged text
+        like 'Propose a deal Set a commission split...'). Returns True when a
+        node was clicked."""
+        clicked = self._page.evaluate("""(label) => {
+            for (const s of document.querySelectorAll('flt-semantics')) {
+                const t = (s.textContent || '').trim();
+                const al = (s.getAttribute('aria-label') || '').trim();
+                if (t.startsWith(label) || al.startsWith(label)) {
+                    const r = s.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) { s.click(); return true; }
+                }
+            }
+            return false;
+        }""", label)
+        self._page.wait_for_timeout(wait_ms)
+        self.enable_semantics(wait_ms=600)
+        return clicked
+
+    def click_exact(self, label: str, wait_ms: int = 2200) -> bool:
+        """Click the FIRST flt-semantics whose text exactly equals `label`
+        (stable for discrete buttons like 'Send Proposal' / 'Confirm Collab')."""
+        clicked = self._page.evaluate("""(label) => {
+            for (const s of document.querySelectorAll('flt-semantics')) {
+                if ((s.textContent || '').trim() === label) {
+                    const r = s.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) { s.click(); return true; }
+                }
+            }
+            return false;
+        }""", label)
+        self._page.wait_for_timeout(wait_ms)
+        self.enable_semantics(wait_ms=600)
+        return clicked
+
+    def switch_toggle(self, index: int, wait_ms: int = 2000) -> bool:
+        """Toggle a role=switch node by DOM index (0 = first switch). Switch
+        nodes carry no aria-label in Flutter's HTML renderer, so index
+        matching (sidebar order) is the reliable route."""
+        clicked = self._page.evaluate("""(i) => {
+            const sems = document.querySelectorAll('flt-semantics[role=switch]');
+            if (sems.length > i) { sems[i].click(); return true; }
+            return false;
+        }""", index)
+        self._page.wait_for_timeout(wait_ms)
+        self.enable_semantics(wait_ms=600)
+        return clicked
+
+    def scroll_down(self, steps: int = 4, dy: int = 650) -> None:
+        """Move the mouse over the scrollable list then wheel, so lazy
+        ListView children below the fold get built and exposed to semantics."""
+        self._page.mouse.move(640, 400)
+        self._page.wait_for_timeout(400)
+        for _ in range(steps):
+            self._page.mouse.wheel(0, dy)
+            self._page.wait_for_timeout(800)
+        self.enable_semantics(wait_ms=600)
+
+    def typed_login(self, email: str, password: str = "test123",
+                    settle_ms: int = 8000) -> None:
+        """Sign in through the REAL Email/Password form (not dev identities).
+        Flutter recreates the <input>s after each fill, so both are targeted
+        by aria-label and allowed to settle (400ms) before proceeding."""
+        self.hash_navigate("#/login", wait_ms=settle_ms)
+        self._page.fill('input[aria-label="Email"]', email)
+        self._page.wait_for_timeout(400)
+        self._page.fill('input[aria-label="Password"]', password)
+        self._page.wait_for_timeout(400)
+        self.enable_semantics()
+        self._page.evaluate("""() => {
+            for (const s of document.querySelectorAll('flt-semantics')) {
+                if ((s.textContent || '').trim() === 'Sign In') { s.click(); break; }
+            }
+        }""")
+        self._page.wait_for_timeout(settle_ms)
+        self.enable_semantics()
+
+    def typed_logout(self) -> None:
+        """Clear the persisted session (SharedPreferences-backed on web) and
+        return to the unauthenticated front door."""
+        self._page.evaluate("""() => {
+            try { localStorage.clear(); } catch (e) {}
+            try { sessionStorage.clear(); } catch (e) {}
+        }""")
+        self._page.goto(self._page.url.split('#')[0])
+        self._page.wait_for_timeout(6000)
+        self.enable_semantics(wait_ms=600)
+
     def screenshot(self, out_path: Path) -> Path:
         self._page.screenshot(path=str(out_path))
         return out_path
