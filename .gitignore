@@ -8,3 +8,11 @@ web_checklist2_results.json
 !test_evidence/*.png
 smoke.png
 projects/smoketest.config.json
+# Round 6: transient run artifacts
+*.log
+game_recap_*.md
+probe_*_log.txt
+probe_*_err.txt
+probe_*_out.json
+suite_pid.txt
+http_server_log.txt

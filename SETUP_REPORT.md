@@ -1792,3 +1792,115 @@ TOTAL: 57 | PASS: 50 | FAIL: 0 | BLOCKED: 7
   terminology; code-level `partner` names untouched; one CHANGELOG entry added.
 - Run 6 completed in ~20 min with 1 transient infra browser crash on the
   first attempt (WMI-detached relaunch succeeded).
+
+## Round 6 - Strip Dev Shortcuts, Honest Fresh Accounts, Suite + Game Green (2026-10-01)
+
+### What Changed (Flutter app)
+
+1. **Dev shortcuts removed for good.** Deleted `lib/core/widgets/dev_quick_launch.dart`
+   (Quick Sign-In FAB, removed from `auth_screen.dart`) and
+   `lib/dev_tools/qa_console_screen.dart`; removed `QaFreshAuthNotifier` +
+   QA-console references from `auth_notifier.dart`, `app_router.dart`,
+   `role_routes.dart`, and provider comments. In `mock_auth_source.dart`,
+   the "recognized prefix" sign-in back-door (`owner@`/`partner@`/`staff@`/
+   `client@` addresses signing in without a real account) and the
+   stale-session restore fallback (seeded profiles like `owner@test.com`
+   restoring password-less) are gone - unknown emails are rejected exactly
+   like a real backend.
+2. **Fresh-account fake data fixed.** `mock_finance_source.dart` no longer
+   clones seed transactions/commissions onto whatever business/user asks
+   (new accounts: empty ledger, "No transactions yet"); `mock_team_source.dart`
+   no longer clones the seed roster (new Network starts empty apart from the
+   owner's own row). `transaction_notifier.dart`: `onMarkPaid` now fully
+   invalidates transaction/commission/revenue providers (no stale figures).
+   Supporting: `finance_repository.dart` (+`getProfileByUserId` for
+   cross-business counterparty naming), `notification_notifier.dart`,
+   `supabase_finance_source.dart` (payer/user-keyed rows + payment provider
+   fields - Phase 10 groundwork), finance screens/providers adjustments.
+3. **Failed sign-in error was invisible (found by Round 6 probe):** a failed
+   login bounced through `/loading` and landed on the front door with the
+   error rendered nowhere. `app_router.dart` now whitelists `loginPath` and
+   `marketingLandingPath` for `AuthUnauthenticated`.
+4. **Checklists:** `TESTING_CHECKLIST.md`, `TESTING_CHECKLIST_2.md`,
+   `TEST_EXECUTION_PLAN.md` deleted; replaced by a single
+   `MANUAL_TEST_CHECKLIST.md` (production-style: sign up fresh accounts
+   yourself, no dev shortcuts).
+
+`flutter analyze` clean; `flutter test` **159/159**; `flutter build web`
+rebuilt; :8080 serves the new bundle.
+
+### What Changed (harness)
+
+1. **`master_test.py` reworked to 52 checks** (was 57; the 5 QA-console
+   checks went away with the deleted QA console). Fixes applied during the
+   green run:
+   - **Reserved-email guard** (`mock_auth_source.dart:94` rejects sign-ups
+     starting `owner@`/`partner@`/`staff@`/`client@`): fixtures changed to
+     `invite.staff@robot.test` / `invite.client@robot.test` (`assoc@robot.test`
+     and `ownN@robot.test` were never affected).
+   - **Invitee shell tab label is "Sessions"**, not Activity/Content:
+     invitee profiles have no `jobId`, so `activeJobConfigProvider` falls
+     back to the platform base config (`jobs_config_provider.dart:111-114`).
+   - **Password params** on `login`/`signup`/`invitee_signup`
+     (default `"test123"` keeps suite behavior; the game passes `demo123`).
+   - **Pipe hang fix:** all stdout/stderr wrappers now use
+     `line_buffering=True`. Run 1 hung ~90 min after Step 9: a buffered
+     `TextIOWrapper` over a backpressured, undrained pipe blocked inside a
+     `record()` print; on kill the buffer was lost ("(no output)").
+2. **`game_driver.py` (new):** the Round 5 game plan, implemented. 18-scene
+   turn-based co-op run - owner signup, associate invite, Gate A chat
+   proposal with live role swap, second studio signup + marketplace
+   discoverable/request/accept, Gate B, approval -> Active, money loop
+   ($120 payment -> Mark Paid -> commission payout visible on both ledgers),
+   staff invite, client invite by the associate. Personas
+   `avery/blake/casey/dana/erin@demo.test`, shared password `demo123`;
+   invites `wlp_000011` (blake) / `wlp_000012` (dana) / `wlp_000013` (erin).
+   Flags: `--auto` (auto-accepts both gates), `--headless`, `--no-prologue`.
+   Writes `game_recap_YYYYMMDD_HHMMSS.md` + screenshots.
+3. **Chat ground truth (probes `probe_chat.py`/`probe_chat2.py`/`probe_chat3.py`):**
+   - The chat icon is NOT a separate semantics node; the owner-side member
+     tile is one button whose tap pushes the chat room as a **URL-less route**
+     (hash stays `#/owner`).
+   - Composer = `textarea[aria-label="Type a message…"]` (multiline: Enter
+     inserts a newline, Send must be clicked).
+   - The Send tooltip is **never** exposed as `flt-semantics[aria-label]`
+     (`labels: []` even after semantics enable), and the composer's own
+     aria-label **empties after typing** - which silently killed the old
+     label-keyed rect lookup (the run-2 scenes 4-5 `sent=False` with no
+     stage output). Fix: fill plain `textarea`, positional click
+     `window.innerWidth - 32` at the textarea's mid-row (probe-verified).
+
+### Verification
+
+```
+Suite : TOTAL 52 | PASS 50 | FAIL 2 | BLOCKED 0   (FAILs = Steps 8-9, known dead-end)
+Game  : pass 18 / fail 0 / skip 0 (of 18)  ->  game_recap_20261001_143057.md
+analyze: clean | unit tests: 159/159 | build web: OK
+```
+
+### Known dead-end (documented; user decision: DO NOT FIX)
+
+Invite-linked associate has no category -> `partnerCategoryId` null ->
+`propose_agreement_screen.dart:237` `_propose()` early-returns silently.
+Suite Steps 8-9 fail honestly with full diagnosis notes in the results
+(`test_results.json`).
+
+### Incidents (round 6)
+
+- **Suite pipe hang** (buffered wrapper, above) -> `line_buffering=True`.
+- **WinError 10106 (Winsock provider) in detached processes** after a PC
+  shutdown/sleep: in-shell python worked, `Start-Process` children failed
+  6/6 (`import _overlapped` -> WSA provider init). Resolved by reboot;
+  detached launch pattern verified working again.
+- **Server 404s:** `http.server` must be started with
+  `--directory C:\DEV\Projects\personal-wellness-trainer-main\build\web`
+  (the harness repo has no `build/`).
+
+### Runbook (round 6)
+
+- Server: `python -m http.server 8080 --directory C:\DEV\Projects\personal-wellness-trainer-main\build\web`
+- Suite:  `python -u master_test.py`  -> `test_results.json`
+- Game:   `python -u game_driver.py --auto --headless --no-prologue`  -> `game_recap_*.md`
+- Invite token order is deterministic (mock `_idCounter` starts at 10:
+  first Generate Link press = `wlp_000011`); read order: page text ->
+  clipboard -> predicted fallback.

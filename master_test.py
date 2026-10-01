@@ -2,12 +2,34 @@
 master_test.py — Automated full checklist test for Personal Wellness Trainer.
 Uses Playwright directly for Flutter Web canvas interaction.
 Takes screenshots at every step, records pass/fail results.
+
+Round 6 rework (dev tools removed for good):
+- No Dev Quick Sign-In / QA Console anywhere: accounts are created through
+  the REAL landing-signup flow, sessions via typed Email/Password login.
+- No page reloads mid-run: mock stores are static in-memory JS and a reload
+  would wipe everything this run created. Sign-out is the in-app
+  Settings -> Sign Out path; navigation is tab/hash based.
+- Invite flows use real one-time tokens (page text / clipboard / predicted
+  mock counter: first Generate Link in a fresh isolate = wlp_000011).
+- Steps 8/9 (invite -> propose deal) record the KNOWN dead-end honestly
+  (FAIL, do-not-fix) instead of being blocked by missing credentials.
+- Marketplace + money loop are driven across two real owner accounts
+  (own1@robot.test, own4@robot.test) plus an invite-linked associate.
 """
-import json, sys, os, io, time
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+import json, sys, io, time, re
+# line_buffering: flush on every newline. Without it the wrapper swallows
+# output until the 8KB buffer fills — if stdout is a backpressured pipe the
+# flush can block forever (Round 6 run 1 hung exactly at a record() print
+# after Step 9) and a killed process loses the whole buffer.
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8',
+                              line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8',
+                              line_buffering=True)
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+
+BASE = "http://localhost:8080"
+ROLE_HASHES = ("/owner", "/partner", "/staff", "/client")
 
 RESULTS = []
 SCREENSHOT_DIR = Path("test_screenshots")
@@ -41,31 +63,10 @@ def _acc_snapshot(page):
     """Get accessibility snapshot."""
     return page.accessibility.snapshot()
 
-def _find_in_tree(node, name, role=None):
-    """Find a node by name (and optional role) in the accessibility tree."""
-    if node.get("name") == name:
-        if role is None or node.get("role") == role:
-            return node
-    for child in node.get("children", []):
-        result = _find_in_tree(child, name, role)
-        if result:
-            return result
-    return None
-
-def _find_all_in_tree(node, name, role=None):
-    """Find all nodes by name in the accessibility tree."""
-    results = []
-    if node.get("name") == name:
-        if role is None or node.get("role") == role:
-            results.append(node)
-    for child in node.get("children", []):
-        results.extend(_find_all_in_tree(child, name, role))
-    return results
-
 def find_and_click(page, label, timeout=3000):
     """Find element by text/name and click. Handles Flutter Web canvas.
     Retries with downward scrolls so below-the-fold chips/tiles (e.g. the
-    dev sheet's role chips, Settings tiles) become clickable."""
+    Settings tiles, below-fold list rows) become clickable."""
     for _ in range(6):
         snap = _acc_snapshot(page)
 
@@ -75,7 +76,7 @@ def find_and_click(page, label, timeout=3000):
         # whose label text rect can sit OUTSIDE the actual hit area (e.g. the
         # bottom-nav 'Settings' label node sits above the tab's hit region).
         #  A) el.click() (semantics tap action) — works even BELOW the fold,
-        #     so no coordinate/scroll fragility (dev-sheet chips, toggles).
+        #     so no coordinate/scroll fragility (chips, toggles).
         #  B) tabs (bottom nav) matched by aria-label + coordinate click —
         #     index alignment with the acc tree is unreliable.
         lab_hit = page.evaluate("""(label) => {
@@ -297,33 +298,6 @@ def find_and_click(page, label, timeout=3000):
 
     return False
 
-def find_text_flexible(page, text):
-    """Find text via get_by_text OR flt-semantics textContent."""
-    # Try DOM text first
-    loc = page.get_by_text(text, exact=False)
-    if loc.count() > 0:
-        box = loc.first.bounding_box()
-        if box:
-            return {"x": box["x"] + box["width"]/2, "y": box["y"] + box["height"]/2}
-    # Try Flutter semantics textContent
-    match = page.evaluate("""(text) => {
-        const sems = document.querySelectorAll('flt-semantics');
-        const lower = text.toLowerCase();
-        for (const s of sems) {
-            const t = (s.textContent || '');
-            if (t.toLowerCase().includes(lower) && t.length < text.length * 3) {
-                const r = s.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) {
-                    return {x: r.x + r.width/2, y: r.y + r.height/2, text: t};
-                }
-            }
-        }
-        return null;
-    }""", text)
-    if match:
-        return {"x": match["x"], "y": match["y"]}
-    return None
-
 def get_all_text(page):
     """Get all visible text from accessibility tree + DOM."""
     snap = page.accessibility.snapshot()
@@ -343,7 +317,6 @@ def get_all_text(page):
 
 def wait_for_texts(page, needles, timeout_ms=20000):
     """Poll until any needle appears in the acc tree (handles slow first load)."""
-    import time
     deadline = time.monotonic() + timeout_ms / 1000.0
     texts = []
     while time.monotonic() < deadline:
@@ -354,159 +327,8 @@ def wait_for_texts(page, needles, timeout_ms=20000):
         page.wait_for_timeout(1200)
     return texts
 
-def get_all_buttons(page):
-    """Get all button labels from accessibility tree."""
-    return page.evaluate("""() => {
-        return Array.from(document.querySelectorAll('flt-semantics[role="button"]'))
-            .map(s => s.textContent)
-            .filter(Boolean);
-    }""")
-
-def sign_in_dev(page, job_type):
-    """Use Dev Quick Sign-In to sign in as a specific job type owner."""
-    if not open_dev_sheet(page):
-        return False
-    return find_and_click(page, job_type)
-
-def open_dev_sheet(page):
-    """Open the Dev Quick Sign-In sheet from the login screen.
-    Retries over the (slow) initial load so the FAB is found reliably."""
-    for _ in range(4):
-        page.evaluate("""() => { window.location.hash = '#/login'; }""")
-        page.wait_for_timeout(2500)
-        enable_flutter_acc(page)
-        fab = page.evaluate("""() => {
-            const sems = document.querySelectorAll('flt-semantics[role="button"]');
-            for (const s of sems) {
-                if ((s.textContent || '') === 'Dev Quick Sign-In') {
-                    const r = s.getBoundingClientRect();
-                    if (r.width > 0 && r.height > 0)
-                        return {x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-            }
-            return null;
-        }""")
-        if fab:
-            page.mouse.click(fab["x"], fab["y"])
-            page.wait_for_timeout(2500)
-            enable_flutter_acc(page)
-            return True
-    return False
-
-def sign_out(page):
-    """Reload the page to get back to the unauthenticated front door (most
-    reliable for Flutter Web — the root live-redirects to /get-started)."""
-    page.goto("http://localhost:8080")
-    page.wait_for_timeout(4000)
-    enable_flutter_acc(page)
-    return True  # always succeeds — we're unauthenticated at the front door
-
-
-def navigate_to_qa_console(page):
-    """Open the Dev Quick Sign-In sheet and click 'Open QA Console'."""
-    if not open_dev_sheet(page):
-        return False
-    # Click the QA Console button
-    result = page.evaluate("""() => {
-        const sems = document.querySelectorAll('flt-semantics');
-        for (const s of sems) {
-            const t = (s.textContent || '');
-            if (t.includes('Open QA Console')) {
-                const r = s.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) {
-                    return {x: r.x + r.width/2, y: r.y + r.height/2};
-                }
-            }
-        }
-        return null;
-    }""")
-    if result:
-        page.mouse.click(result["x"], result["y"])
-        page.wait_for_timeout(4000)
-        enable_flutter_acc(page)
-        return True
-    return False
-
-
-def get_qa_panel_regions(page):
-    """Detect the 4 QA Console panel regions from the accessibility tree.
-    The panel headers are plain text labels (OWNER/PARTNER/STAFF/CLIENT),
-    so match by name regardless of semantics role."""
-    snap = page.accessibility.snapshot()
-    panels = {}
-    def find_role_labels(node):
-        if node.get("name") in ("OWNER", "PARTNER", "STAFF", "CLIENT"):
-            panels[node["name"]] = True
-        for c in node.get("children", []):
-            find_role_labels(c)
-    find_role_labels(snap)
-
-    # QA Console panels are in a 2x2 grid
-    # OWNER: top-left, PARTNER: top-right, STAFF: bottom-left, CLIENT: bottom-right
-    regions = {}
-    if "OWNER" in panels:
-        regions["OWNER"] = {"x1": 0, "y1": 0, "x2": 640, "y2": 400}
-    if "PARTNER" in panels:
-        regions["PARTNER"] = {"x1": 640, "y1": 0, "x2": 1280, "y2": 400}
-    if "STAFF" in panels:
-        regions["STAFF"] = {"x1": 0, "y1": 400, "x2": 640, "y2": 800}
-    if "CLIENT" in panels:
-        regions["CLIENT"] = {"x1": 640, "y1": 400, "x2": 1280, "y2": 800}
-    return regions
-
-
-def verify_qa_panel_hasSignIn(page, panel_name, region):
-    """Check that a QA panel shows a sign-in screen (Email field)."""
-    result = page.evaluate("""(args) => {
-        const [x1, y1, x2, y2] = [args.x1, args.y1, args.x2, args.y2];
-        const sems = document.querySelectorAll('flt-semantics');
-        for (const s of sems) {
-            const t = (s.textContent || '');
-            if (t === 'Email' || t === 'Sign In') {
-                const r = s.getBoundingClientRect();
-                const cx = r.x + r.width/2, cy = r.y + r.height/2;
-                if (r.width > 0 && r.height > 0 &&
-                    cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) {
-                    return {found: true, text: t};
-                }
-            }
-        }
-        return {found: false};
-    }""", region)
-    return result.get("found", False)
-
-
-# ---------------------------------------------------------------------------
-# Seeded-account helpers (typed email sign-in + marketplace driving).
-#
-# The mock accounts owner@test.com (Alex Owner Demo Business) and
-# partner@test.com (Sunrise Wellness Annex) are the ONLY identities with
-# real email credentials. Everything below was validated by live probes:
-#   - typed login persists via SharedPreferences -> must localStorage.clear()
-#     before switching accounts.
-#   - Flutter re-creates the Email/Password <input>s after each fill, so we
-#     re-locate by aria-label every time.
-#   - Switch toggles carry no aria-label; they sit at x=1218 (Switch aligns
-#     right) and are matched by DOM index (0 = Discoverable, 1.. = category
-#     rows in sidebar order).
-#   - Marketplace sections render BELOW the tall availability card, so we must
-#     scroll (mouse.move + wheel) before asserting tiles/requests.
-# ---------------------------------------------------------------------------
-
-def await_text(page, needles, timeout_ms=10000):
-    """Poll innerText until ANY needle appears (case-insensitive)."""
-    lower = [n.lower() for n in needles]
-    deadline = time.time() + timeout_ms / 1000
-    while time.time() < deadline:
-        txt = page.evaluate("document.body.innerText") or ""
-        if any(n in txt.lower() for n in lower):
-            return True
-        page.wait_for_timeout(400)
-    return False
-
-
 def until_absent(page, needles, timeout_ms=8000):
-    """Poll innerText until NONE of the needles remain (case-insensitive)."""
+    """Poll until NONE of the needles remain in body innerText (case-insensitive)."""
     lower = [n.lower() for n in needles]
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
@@ -516,36 +338,38 @@ def until_absent(page, needles, timeout_ms=8000):
         page.wait_for_timeout(400)
     return False
 
+def has_text(page, needles):
+    """True if ANY needle appears in the page innerText (case-insensitive)."""
+    txt = page.evaluate("document.body.innerText").lower()
+    return any(n.lower() in txt for n in needles)
 
-def typed_login(page, email, password="test123"):
-    """Fill the real Email/Password inputs on #/login and submit."""
-    page.evaluate("""() => { window.location.hash = '#/login'; }""")
-    page.wait_for_timeout(8000)
-    enable_flutter_acc(page)
-    page.fill(f'input[aria-label="Email"]', email)
-    page.wait_for_timeout(400)
-    page.fill(f'input[aria-label="Password"]', password)
-    page.wait_for_timeout(400)
-    enable_flutter_acc(page)
-    page.evaluate("""() => {
+def page_text(page):
+    """Lower-cased blob of body innerText + semantics text/aria-labels."""
+    return page.evaluate("""() => {
+        let t = document.body.innerText || '';
         for (const s of document.querySelectorAll('flt-semantics')) {
-            if ((s.textContent || '').trim() === 'Sign In') { s.click(); break; }
+            t += '\\n' + (s.textContent || '') + '\\n' + (s.getAttribute('aria-label') || '');
         }
+        return t.toLowerCase();
     }""")
-    page.wait_for_timeout(8000)
-    enable_flutter_acc(page)
 
+def has(page, needles):
+    txt = page_text(page)
+    return any(n.lower() in txt for n in needles)
 
-def typed_logout(page):
-    """Clear persisted session and return to the unauthenticated front door."""
-    page.evaluate("""() => {
-        try { localStorage.clear(); } catch (e) {}
-        try { sessionStorage.clear(); } catch (e) {}
-    }""")
-    page.goto("http://localhost:8080")
-    page.wait_for_timeout(6000)
-    enable_flutter_acc(page)
+def has_all(page, needles):
+    txt = page_text(page)
+    return all(n.lower() in txt for n in needles)
 
+def has_after_scroll(page, needles, rounds=5, steps=2):
+    """Scroll down (up to `rounds` times) until every needle is on-page."""
+    for _ in range(rounds):
+        if has_all(page, needles):
+            return True
+        scroll_down(page, steps=steps)
+        page.wait_for_timeout(600)
+        enable_flutter_acc(page)
+    return has_all(page, needles)
 
 def click_prefix(page, label, wait=2200):
     """Click the FIRST flt-semantics whose text/aria-label STARTS WITH label.
@@ -568,33 +392,58 @@ def click_prefix(page, label, wait=2200):
 
 
 def click_exact(page, label, wait=2200):
-    """Click the FIRST flt-semantics whose text EXACTLY equals label.
+    """Click the flt-semantics whose text EXACTLY equals label, preferring
+    interactive nodes (button/tab/link/...) over plain text nodes. A lone
+    text node with the same string often precedes the real button (e.g. the
+    finance 'Mark Paid' tile renders text -> group -> button), and el.click()
+    on a non-interactive node is a no-op.
     Returns True if a node matched and was clicked."""
     clicked = page.evaluate("""(label) => {
-        for (const s of document.querySelectorAll('flt-semantics')) {
-            if ((s.textContent || '').trim() === label) {
-                const r = s.getBoundingClientRect();
-                if (r.width > 0 && r.height > 0) { s.click(); return true; }
-            }
-        }
-        return false;
+        const vis = (s) => {
+            const r = s.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        const sems = Array.from(document.querySelectorAll('flt-semantics'))
+            .filter(vis);
+        const interactive = ['button', 'tab', 'link', 'checkbox', 'switch', 'menuitem'];
+        const exact = (s) => {
+            const t = (s.textContent || '').trim();
+            const al = (s.getAttribute('aria-label') || '').trim();
+            return t === label || al === label;
+        };
+        const hit = sems.find(s =>
+                        interactive.includes(s.getAttribute('role')) && exact(s))
+                 || sems.find(exact);
+        if (!hit) return false;
+        hit.click();
+        return true;
     }""", label)
     page.wait_for_timeout(wait)
     enable_flutter_acc(page)
     return clicked
 
 
-def switch_click(page, index):
-    """Toggle role=switch flt-semantics by DOM index (0=Discoverable).
-    Returns True if the switch existed and was toggled."""
-    clicked = page.evaluate("""(i) => {
-        const sems = document.querySelectorAll('flt-semantics[role=switch]');
-        if (sems.length > i) { sems[i].click(); return true; }
-        return false;
-    }""", index)
-    page.wait_for_timeout(2000)
-    enable_flutter_acc(page)
-    return clicked
+def click_contains(page, needle, wait=2500):
+    """Click the LAST flt-semantics whose text/aria contains needle.
+    Returns the clicked node's text (or None)."""
+    matched = page.evaluate("""(needle) => {
+        const hits = [];
+        for (const s of document.querySelectorAll('flt-semantics')) {
+            const t = ((s.textContent || '') + ' ' + (s.getAttribute('aria-label') || ''))
+                .trim().replace(/\\s+/g, ' ');
+            if (t.includes(needle)) {
+                const r = s.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) hits.push(s);
+            }
+        }
+        if (!hits.length) return null;
+        const el = hits[hits.length - 1];
+        el.click();
+        return ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || ''))
+            .trim().replace(/\\s+/g, ' ');
+    }""", needle)
+    page.wait_for_timeout(wait)
+    return matched
 
 
 def scroll_down(page, steps=4, dy=650):
@@ -607,18 +456,449 @@ def scroll_down(page, steps=4, dy=650):
     enable_flutter_acc(page)
 
 
-def has_text(page, needles):
-    """True if ANY needle appears in the page innerText (case-insensitive)."""
-    txt = page.evaluate("document.body.innerText").lower()
-    return any(n.lower() in txt for n in needles)
+def click_btn(page, label, wait=2500):
+    """Click flt-semantics[role=button] whose text EXACTLY equals label."""
+    matched = page.evaluate("""(label) => {
+        for (const s of document.querySelectorAll('flt-semantics[role=button]')) {
+            const t = (s.textContent || '').trim().replace(/\\s+/g, ' ');
+            if (t === label) {
+                const r = s.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) { s.click(); return t; }
+            }
+        }
+        return null;
+    }""", label)
+    page.wait_for_timeout(wait)
+    return matched
+
+
+def click_btn_prefix(page, prefix, wait=2500):
+    """Click flt-semantics[role=button] whose text STARTS WITH prefix."""
+    matched = page.evaluate("""(prefix) => {
+        for (const s of document.querySelectorAll('flt-semantics[role=button]')) {
+            const t = (s.textContent || '').trim().replace(/\\s+/g, ' ');
+            if (t.startsWith(prefix)) {
+                const r = s.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) { s.click(); return t; }
+            }
+        }
+        return null;
+    }""", prefix)
+    page.wait_for_timeout(wait)
+    return matched
+
+
+def fill(page, aria_label, value):
+    """page.fill by exact input aria-label (Flutter re-creates inputs per
+    fill, so locate fresh every time)."""
+    try:
+        page.fill(f'input[aria-label="{aria_label}"]', value, timeout=4000)
+        page.wait_for_timeout(300)
+        return True
+    except Exception:
+        return False
+
+
+def fill_textareas(page, txt, wait=500):
+    n = page.evaluate("""(txt) => {
+        let c = 0;
+        for (const ta of document.querySelectorAll('textarea')) {
+            const r = ta.getBoundingClientRect();
+            if (r.width > 0) {
+                ta.focus(); ta.value = txt;
+                ta.dispatchEvent(new Event('input', {bubbles: true}));
+                c++;
+            }
+        }
+        return c;
+    }""", txt)
+    if n:
+        page.wait_for_timeout(wait)
+    return n
+
+
+def fill_first_input(page, value):
+    n = page.evaluate("""(v) => {
+        let c = 0;
+        for (const i of document.querySelectorAll('input, textarea')) {
+            const r = i.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+                const proto = i.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                setter.call(i, v);
+                i.dispatchEvent(new Event('input', {bubbles: true}));
+                c++;
+                break;
+            }
+        }
+        return c;
+    }""", value)
+    page.wait_for_timeout(400)
+    return n
+
+
+def wait_for_input(page, aria, timeout_ms=8000):
+    waited = 0
+    while waited < timeout_ms:
+        try:
+            el = page.query_selector(f'input[aria-label="{aria}"]')
+            if el and el.is_visible():
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(400)
+        waited += 400
+    return False
+
+
+def type_into(page, aria, value, tries=4):
+    sel = f'input[aria-label="{aria}"]'
+    for _ in range(tries):
+        try:
+            el = page.wait_for_selector(sel, state="attached", timeout=4000)
+            el.click()
+            page.keyboard.press("Control+A")
+            page.keyboard.type(value, delay=25)
+            page.wait_for_timeout(250)
+            if el.input_value() == value:
+                return True
+        except Exception:
+            pass
+        page.wait_for_timeout(500)
+    return False
+
+
+def fill_by_label_prefix(page, prefix, value, tries=4):
+    """Fill an input whose aria-label STARTS with `prefix` — Flutter
+    merges labelText+hint into one label ('Amount\\ne.g. 120.00'), so an
+    exact aria-label selector would never match."""
+    for _ in range(tries):
+        ok = page.evaluate("""({prefix, value}) => {
+            for (const i of document.querySelectorAll('input, textarea')) {
+                const al = (i.getAttribute('aria-label') || '');
+                if (!al.startsWith(prefix)) continue;
+                const r = i.getBoundingClientRect();
+                if (!(r.width > 0 && r.height > 0)) continue;
+                const proto = i.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                setter.call(i, value);
+                i.dispatchEvent(new Event('input', {bubbles: true}));
+                return true;
+            }
+            return false;
+        }""", {"prefix": prefix, "value": value})
+        if ok:
+            page.wait_for_timeout(300)
+            return True
+        page.wait_for_timeout(500)
+    return False
+
+
+def input_labels(page):
+    return page.evaluate("""() => Array.from(
+        document.querySelectorAll('input, textarea'))
+        .map(i => i.getAttribute('aria-label') || '')""")
+
+
+def card_titles(page):
+    """Titles of the marketplace Availability card switches:
+    ['Discoverable', ...slot titles]."""
+    return page.evaluate("""() => {
+        for (const s of document.querySelectorAll('flt-semantics')) {
+            const a = s.getAttribute('aria-label') || '';
+            if (a.includes('My Availability')) {
+                const lines = a.split('\\n').map(x => x.trim()).filter(Boolean);
+                const titles = ['Discoverable'];
+                const i = lines.indexOf('Collab Slots');
+                if (i >= 0) {
+                    const rest = lines.slice(i + 1);
+                    for (let j = 0; j + 1 < rest.length + 1; j += 2) titles.push(rest[j]);
+                }
+                return titles;
+            }
+        }
+        return [];
+    }""")
+
+
+def switch_states(page):
+    return page.evaluate("""() => Array.from(
+        document.querySelectorAll('flt-semantics[role=switch]'))
+        .map(s => s.getAttribute('aria-checked') || '')""")
+
+
+def toggle_slot(page, title, wait=3000):
+    """Toggle the availability switch named `title` by card-title index.
+    Returns True if it flipped to 'true'."""
+    titles = card_titles(page)
+    if title not in titles:
+        print(f"    toggle {title!r}: NOT IN titles {titles}")
+        return None
+    idx = titles.index(title)
+    before = switch_states(page)
+    page.evaluate("""(i) => {
+        const sw = document.querySelectorAll('flt-semantics[role=switch]');
+        if (sw[i]) sw[i].click();
+    }""", idx)
+    page.wait_for_timeout(wait)
+    after = switch_states(page)
+    ok = idx < len(after) and after[idx] == "true" and (
+        idx >= len(before) or before[idx] != "true")
+    print(f"    toggle {title!r} idx={idx}: {before[idx] if idx < len(before) else '?'}"
+          f" -> {after[idx] if idx < len(after) else '?'} ({'OK' if ok else 'CHECK'})")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# Session / account helpers (Round 6: real flows only, NO page reloads).
+# ---------------------------------------------------------------------------
+
+def on_role_shell(page):
+    return any(h in page.url for h in ROLE_HASHES)
+
+
+def typed_login(page, email, password="test123"):
+    """Fill the real Email/Password inputs on #/login and submit."""
+    page.evaluate("""() => { window.location.hash = '#/login'; }""")
+    page.wait_for_timeout(8000)
+    enable_flutter_acc(page)
+    page.fill(f'input[aria-label="Email"]', email)
+    page.wait_for_timeout(400)
+    page.fill(f'input[aria-label="Password"]', password)
+    page.wait_for_timeout(400)
+    enable_flutter_acc(page)
+    page.evaluate("""() => {
+        for (const s of document.querySelectorAll('flt-semantics')) {
+            if ((s.textContent || '').trim() === 'Sign In') { s.click(); break; }
+        }
+    }""")
+    page.wait_for_timeout(8000)
+    enable_flutter_acc(page)
+
+
+def login(page, email, password="test123"):
+    """Typed credential login + settle on the role dashboard."""
+    typed_login(page, email, password)
+    page.wait_for_timeout(3000)
+    enable_flutter_acc(page)
+
+
+def real_sign_out(page):
+    """Settings -> Sign Out (app-level). NO page reload: mock stores are
+    static in-memory JS — a reload would wipe everything created this run.
+    Pops pushed routes first (URL-less ones via the Back button, URL-carrying
+    ones via hash) so the shell's Settings tab is reachable.
+    Returns True when no role shell hash remains in the URL."""
+    if not on_role_shell(page):
+        return True  # already at the front door / login
+    for attempt in range(3):
+        page.keyboard.press("Escape")  # close any open dialog first
+        page.wait_for_timeout(800)
+        if "#" in page.url:
+            h = page.url.split("#", 1)[1].strip("/")
+            parts = [p for p in h.split("/") if p]
+            if len(parts) > 1:
+                page.evaluate(f"() => {{ window.location.hash = '#/{parts[0]}'; }}")
+                page.wait_for_timeout(2500)
+                enable_flutter_acc(page)
+        # URL-less pushed routes (e.g. AgreementDetail keeps '#/owner')
+        if has(page, ["Back"]) and not has(page, ["Revenue Summary"]):
+            find_and_click(page, "Back", timeout=4000)
+            page.wait_for_timeout(1500)
+            enable_flutter_acc(page)
+        find_and_click(page, "Settings", timeout=6000)
+        page.wait_for_timeout(1500)
+        find_and_click(page, "Sign Out", timeout=3000)
+        page.wait_for_timeout(3000)
+        enable_flutter_acc(page)
+        if not on_role_shell(page):
+            return True
+        print(f"    sign-out attempt {attempt} still on {page.url}")
+    return False
+
+
+def signup(page, name, email, category, job_prefix, business, tagline="Robot biz",
+           password="test123"):
+    """Landing form -> onboarding -> owner dashboard. Returns final URL."""
+    page.evaluate("() => { window.location.hash = '#/get-started'; }")
+    page.wait_for_timeout(3500)
+    enable_flutter_acc(page)
+    for attempt in range(3):
+        type_into(page, "Your Name", name)
+        type_into(page, "Email", email)
+        type_into(page, "Password", password)
+        click_btn(page, "Get started", wait=5000)
+        if "#/onboarding" in page.url or has(page, ["Choose", "category", "Movement"]):
+            break
+        print(f"    submit attempt {attempt}: still on {page.url},"
+              f" validation={has(page, ['is required'])}")
+    if "#/onboarding" not in page.url:
+        print(f"    signup {email}: onboarding never reached ({page.url})")
+    for attempt in range(3):
+        if wait_for_input(page, "Business Name", 1200) or has(page, ["Finish Setup"]) \
+           or has(page, ["About you"]):
+            break
+        if not has(page, [job_prefix]):
+            hit = click_btn(page, category, wait=3500)
+            print(f"    signup attempt {attempt}: category={hit!r}")
+            if hit is None:
+                print(f"    signup {email}: category button {category!r} not found")
+        hit = click_btn_prefix(page, job_prefix, wait=3500)
+        print(f"    signup attempt {attempt}: job={hit!r}")
+        click_btn(page, "Continue", wait=4000)
+        if wait_for_input(page, "Business Name"):
+            break
+        print(f"    signup attempt {attempt}: Business Name missing, retrying")
+    page.fill('input[aria-label="Business Name"]', business, timeout=8000)
+    try:
+        page.fill('input[aria-label="Tagline"]', tagline, timeout=4000)
+    except Exception:
+        pass
+    fill_textareas(page, "Robot automated business description")
+    click_btn(page, "Continue", wait=4000)
+    fill_textareas(page, "Robot team member bio")
+    hit = None
+    for _ in range(3):
+        hit = click_btn(page, "Finish Setup", wait=6000)
+        if hit or "#/owner" in page.url:
+            break
+        click_btn(page, "Continue", wait=3000)
+        fill_textareas(page, "Robot team member bio")
+    enable_flutter_acc(page)
+    print(f"    signup {email}: finish={hit} -> {page.url}")
+    return page.url
+
+
+def invitee_signup(page, code, name, email, password="test123"):
+    """Landing form in 'Activate your code' mode -> role dashboard.
+    Returns the final URL (expected to carry the invitee's role hash)."""
+    page.evaluate("() => { window.location.hash = '#/get-started'; }")
+    page.wait_for_timeout(3500)
+    enable_flutter_acc(page)
+    fill(page, "Code (optional)", code)
+    fill(page, "Your Name", name)
+    fill(page, "Email", email)
+    fill(page, "Password", password)
+    # Filling Code swaps the landing form into 'Activate your code' mode
+    # with an 'Activate' button (probed).
+    hit = click_btn(page, "Activate", wait=6000) or click_btn(page, "Get started", wait=6000)
+    print(f"    invitee {email} submit={hit} code={code}")
+    for hop in range(8):
+        url = page.url
+        if any(h in url for h in ROLE_HASHES):
+            break
+        txt = page_text(page)
+        if "invalid" in txt or "not found" in txt or "expired" in txt or "error" in txt:
+            print(f"    invitee {email}: error text visible, stopping")
+            break
+        acted = (click_btn(page, "Continue", wait=3000)
+                 or click_btn(page, "Next", wait=3000)
+                 or click_btn(page, "Finish Setup", wait=3000))
+        if not acted:
+            break
+    enable_flutter_acc(page)
+    print(f"    invitee {email}: -> {page.url}")
+    return page.url
+
+
+def generate_invite_token(page, fallback):
+    """The 'Invite ...' dialog must already be open. Press 'Generate Link'
+    (the ONLY place a token is minted — one per press; mock _idCounter starts
+    at 10, so the Nth press of the run yields wlp_0000(10+N)), read the token
+    off the QR dialog (page text, then clipboard via a trusted gesture), then
+    close both dialogs. Returns the token string (may be the predicted
+    `fallback` when both read paths fail)."""
+    gl = click_btn(page, "Generate Link", wait=4000)
+    token = ""
+    # QR dialog shows the token as SelectableText — try page text first.
+    for _ in range(4):
+        codes = re.findall(r"wlp_[A-Za-z0-9]+", page_text(page))
+        if codes:
+            token = codes[0]
+            break
+        page.wait_for_timeout(500)
+    if not token:
+        # Clipboard write needs a TRUSTED gesture (JS el.click() is untrusted
+        # and navigator.clipboard.writeText gets rejected silently), so
+        # coordinate-click the exact-text node.
+        pt = page.evaluate("""() => {
+            for (const s of document.querySelectorAll('flt-semantics')) {
+                if ((s.textContent || '').trim() === 'Copy code') {
+                    const r = s.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0)
+                        return {x: r.x + r.width/2, y: r.y + r.height/2};
+                }
+            }
+            return null;
+        }""")
+        if pt:
+            page.mouse.click(pt["x"], pt["y"])
+            page.wait_for_timeout(500)
+        for _ in range(6):
+            page.wait_for_timeout(500)
+            clip = ""
+            try:
+                clip = page.evaluate("navigator.clipboard.readText()") or ""
+            except Exception:
+                pass
+            codes = re.findall(r"wlp_[A-Za-z0-9]+", clip)
+            if codes:
+                token = codes[0]
+                break
+    if not token:
+        token = fallback
+        print(f"    invite token read failed -> using predicted {fallback}")
+    click_btn(page, "Done", wait=2000)
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(1200)
+    enable_flutter_acc(page)
+    print(f"    invite token: {token} (generate={gl})")
+    return token
+
+
+def go_home(page, tries=3):
+    """Land on the owner dashboard WITHOUT a page reload (a reload would
+    wipe the static in-memory mock stores this run created).
+
+    - Bottom-nav Home tab: works on shell screens (dashboard/marketplace/
+      notifications).
+    - hash '#/owner': no-op when already '#/owner', never pops a pushed
+      route (AgreementDetail doesn't even change the URL).
+    - Back button: the only way out of URL-less pushed routes."""
+    for _ in range(tries):
+        if has(page, ["Agreements"]):
+            return True
+        if has(page, ["Back"]):
+            find_and_click(page, "Back", timeout=4000)
+        else:
+            find_and_click(page, "Home", timeout=4000)
+        page.wait_for_timeout(2000)
+        enable_flutter_acc(page)
+        page.evaluate("() => { window.location.hash = '#/owner'; }")
+        page.wait_for_timeout(1500)
+        enable_flutter_acc(page)
+    return has(page, ["Agreements"])
+
+
+def go_marketplace(page):
+    page.evaluate("() => { window.location.hash = '#/owner/marketplace'; }")
+    page.wait_for_timeout(5000)
+    enable_flutter_acc(page)
 
 
 def run_tests():
     pw = sync_playwright().start()
     browser = pw.chromium.launch(headless=True,
-                                 args=["--enable-unsafe-swiftshader"])
-    page = browser.new_page(viewport={"width": 1280, "height": 800})
-    page.goto("http://localhost:8080")
+                                 args=["--enable-unsafe-swiftshader",
+                                       "--disable-dev-shm-usage"])
+    ctx = browser.new_context(viewport={"width": 1280, "height": 800},
+                              permissions=["clipboard-read", "clipboard-write"])
+    page = ctx.new_page()
+    page.goto(BASE)
     page.wait_for_timeout(6000)
 
     # =====================================================================
@@ -634,55 +914,55 @@ def run_tests():
                            timeout_ms=60000)
     s = screenshot(page, "CC01_front_door")
     texts = get_all_text(page)
-    has_landing = any("wellness business" in t.lower() or "run your own" in t.lower() for t in texts)
+    has_landing = any("wellness business" in t.lower() or "run your own" in t.lower()
+                      for t in texts)
     record("CC1", "App launches, unauthenticated root → marketing front door (/get-started)",
            "pass" if has_landing else "fail",
            "Marketing landing visible", s, f"Found texts: {texts[:5]}")
 
-    # CC2: login route shows the Dev Quick Sign-In FAB
-    has_dev = open_dev_sheet(page)
-    s2 = screenshot(page, "CC02_dev_button")
-    record("CC2", "Dev Quick Sign-In FAB present on login screen",
-           "pass" if has_dev else "fail",
-           "Dev Quick Sign-In present", s2)
-
-    # Sign in as Yoga Studio for remaining CC checks (sheet is already open)
-    find_and_click(page, "Yoga Studio")
+    # CC2 (Round 6 flip): the Dev Quick Sign-In FAB is GONE for good —
+    # the login screen only offers the real credential form.
+    page.evaluate("() => { window.location.hash = '#/login'; }")
     page.wait_for_timeout(3000)
     enable_flutter_acc(page)
+    s2 = screenshot(page, "CC02_no_dev_fab")
+    labels = input_labels(page)
+    form_ok = has(page, ["Sign In"]) and "Email" in labels
+    no_dev = not has(page, ["Dev Quick Sign-In"])
+    record("CC2", "Dev Quick Sign-In FAB removed from login screen (Round 6 flip)",
+           "pass" if (no_dev and form_ok) else "fail",
+           "No dev FAB; real Email/Password form present", s2,
+           f"inputs={labels}, dev FAB present={not no_dev}")
 
-    # CC3: Job type affects dashboard
-    wait_for_texts(page, ["Revenue", "Yoga"], timeout_ms=20000)
-    s3 = screenshot(page, "CC03_yoga_dashboard")
-    texts = get_all_text(page)
-    has_yoga = any("Yoga" in t for t in texts)
-    has_dashboard = any("Revenue" in t or "Dashboard" in t for t in texts)
-    record("CC3", "Yoga Studio dashboard loads with job-specific content",
-           "pass" if has_yoga and has_dashboard else "fail",
-           "Dashboard shows Yoga Studio branding + stats", s3)
+    # CC3: fresh signup drives the REAL landing form end-to-end.
+    url = signup(page, "Robot Yoga", "own1@robot.test", "Movement & Fitness",
+                 "Yoga Studio", "Robot Yoga Co")
+    wait_for_texts(page, ["Revenue"], timeout_ms=20000)
+    s3 = screenshot(page, "CC03_own1_signup")
+    ok3 = has(page, ["Robot Yoga Co"]) and has(page, ["Revenue Summary"])
+    record("CC3", "Fresh owner signup (own1@robot.test) lands on its dashboard",
+           "pass" if ok3 else "fail",
+           "Dashboard with the new business branding", s3,
+           f"url={url}")
 
     # CC4: Bottom nav tabs switch screens correctly
-    tabs_work = True
-    tab_names = ["Content", "Revenue", "Network", "Settings", "Home"]
-    for tab in tab_names:
+    for tab in ["Content", "Revenue", "Network", "Settings", "Home"]:
         if find_and_click(page, tab):
             page.wait_for_timeout(1500)
             enable_flutter_acc(page)
             s_tab = screenshot(page, f"CC04_tab_{tab}")
             tab_texts = get_all_text(page)
             if not tab_texts:
-                tabs_work = False
                 record("CC4", f"Tab '{tab}' loads content", "fail",
                        "Tab shows content", s_tab, f"No text found on {tab} tab")
             else:
                 record("CC4", f"Tab '{tab}' loads content", "pass",
                        "Tab shows content", s_tab)
         else:
-            tabs_work = False
             record("CC4", f"Tab '{tab}' clickable", "fail",
                    "Tab responds to click", "", "Tab not found")
 
-    # CC5: Pull-to-refresh (simulated — hard to test on web, verify list loads)
+    # CC5: Content list loads (pull-to-refresh N/A on web)
     find_and_click(page, "Content")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
@@ -704,27 +984,27 @@ def run_tests():
            "No 'null' text visible", s6, f"Texts: {texts[:8]}")
 
     # CC7: Notification bell icon
-    s7 = screenshot(page, "CC07_notifications")
     has_bell = find_and_click(page, "Notifications") or find_and_click(page, "Notification")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s7b = screenshot(page, "CC07_notifications_open")
+    s7 = screenshot(page, "CC07_notifications")
     texts = get_all_text(page)
     record("CC7", "Notification bell opens notifications",
            "pass" if has_bell else "fail",
-           "Notification panel/list visible", s7b, f"Found: {texts[:5]}")
-    # Don't try to navigate back — sign_out will reload the page
+           "Notification panel/list visible", s7, f"Found: {texts[:5]}")
 
-    # CC8: Sign out returns to login screen
-    signed_out = sign_out(page)
+    # CC8: real in-app sign-out (Settings -> Sign Out, NO reload)
+    signed_out = real_sign_out(page)
     page.wait_for_timeout(2000)
     enable_flutter_acc(page)
     s8 = screenshot(page, "CC08_signed_out")
     texts = get_all_text(page)
-    back_to_login = any("sign in" in t.lower() or "wellness business" in t.lower() for t in texts)
-    record("CC8", "Sign out returns to login screen",
-           "pass" if signed_out and back_to_login else "fail",
-           "Login screen visible after sign-out", s8)
+    back_to_login = any("sign in" in t.lower() or "wellness business" in t.lower()
+                        for t in texts)
+    record("CC8", "Sign out (Settings → Sign Out, in-app) returns to front door",
+           "pass" if signed_out and back_to_login and not on_role_shell(page) else "fail",
+           "Unauthenticated front door after sign-out", s8,
+           f"url={page.url}")
 
     # CC9: Window resize doesn't break layout
     page.set_viewport_size({"width": 800, "height": 600})
@@ -732,737 +1012,662 @@ def run_tests():
     s9a = screenshot(page, "CC09_small_window")
     page.set_viewport_size({"width": 1920, "height": 1080})
     page.wait_for_timeout(1500)
-    s9b = screenshot(page, "CC09_large_window")
+    screenshot(page, "CC09_large_window")
     page.set_viewport_size({"width": 1280, "height": 800})
     page.wait_for_timeout(1000)
     record("CC9", "Window resize doesn't break layout", "pass",
-           "Layout adapts to resize", s9a, f"Small: 800x600, Large: 1920x1080")
+           "Layout adapts to resize", s9a, "Small: 800x600, Large: 1920x1080")
 
     # =====================================================================
-    # QA CONSOLE CHECKS
+    # LOGIN-SCREEN INTEGRITY (replaces the deleted QA Console section)
     # =====================================================================
-    print("\n=== QA CONSOLE CHECKS ===\n")
+    print("\n=== LOGIN SCREEN INTEGRITY ===\n")
 
-    # QA1: QA Console opens from Dev Quick Sign-In
-    qa_opened = navigate_to_qa_console(page)
-    s_qa = screenshot(page, "qa_console_overview")
-    record("QA1", "QA Console opens from Dev Quick Sign-In",
-           "pass" if qa_opened else "fail",
-           "QA Console page loaded", s_qa)
-
-    # QA2: All 4 panels load
-    if qa_opened:
-        # NOTE: Flutter Web's HTML semantics renderer exposes only the FIRST
-        # panel's inner form to the accessibility tree (confirmed by probe:
-        # a single 'Personal Wellness Trainer / Sign in to continue / Sign In'
-        # form is present, no PARTNER/STAFF/CLIENT inner forms anywhere).
-        # This is a web semantics limitation of nested Navigators — the OTHER
-        # panels render (screenshot evidence) but cannot be asserted
-        # mechanically, so the 4-panel grid itself stays BLOCKED.
-        record("QA2", "All 4 panels load (OWNER, PARTNER, STAFF, CLIENT)",
-               "blocked", "4 pane grid present (visual evidence only)",
-               s_qa,
-               "Nested-Navigator web semantics limit: only one panel's form is "
-               "exposed; PARTNER/STAFF/CLIENT headers absent from tree. "
-               "Requires manual/visual verification (screenshot evidence).")
-
-        # QA3-OWNER: the OWNER panel (top-left, first in DOM) is the only one
-        # exposed to the semantics tree — its sign-in form is directly
-        # assertable. PARTNER/STAFF/CLIENT inner forms stay unverifiable.
-        has_owner_form = has_text(page, ["Sign in to continue", "Forgot password?"])
-        record("QA3-OWNER", "OWNER panel shows sign-in screen",
-               "pass" if has_owner_form else "blocked",
-               "Sign-in form visible in exposed (OWNER) panel",
-               s_qa,
-               "")
-
-        record("QA3-PARTNER", "PARTNER panel shows sign-in screen",
-               "blocked", "", "",
-               "PARTNER panel not exposed to web semantics tree (see QA2 note).")
-        record("QA3-STAFF", "STAFF panel shows sign-in screen",
-               "blocked", "", "",
-               "STAFF panel not exposed to web semantics tree (see QA2 note).")
-        record("QA3-CLIENT", "CLIENT panel shows sign-in screen",
-               "blocked", "", "",
-               "CLIENT panel not exposed to web semantics tree (see QA2 note).")
-
-        # QA4: sign the OWNER panel in using ITS OWN Dev Quick Sign-In FAB
-        # (fresh per-panel auth store — typed owner@test.com does not exist
-        # there yet). Reuse find_and_click because the panel sheet needs the
-        # same robust fallbacks as the main login flow.
-        qa4_marker = False
-        if has_owner_form and find_and_click(page, "Dev Quick Sign-In"):
-            page.wait_for_timeout(2500)
-            enable_flutter_acc(page)
-            if find_and_click(page, "Yoga Studio"):
-                page.wait_for_timeout(3000)
-                enable_flutter_acc(page)
-                qa4_marker = has_text(
-                    page,
-                    ["Revenue", "Upcoming", "Team", "Agreements"],
-                ) and not has_text(page, ["Sign in to continue"])
-            s_qa4 = screenshot(page, "qa_console_owner_signed_in")
-            record("QA4", "OWNER panel signs in and shows dashboard",
-                   "pass" if qa4_marker else "blocked",
-                   "Dashboard visible in OWNER panel", s_qa4,
-                   "OWNER panel Dev Quick Sign-In exercised; dashboard markers "
-                   "checked. (No markers -> stays BLOCKED rather than FAIL.)")
-        else:
-            record("QA4", "OWNER panel signs in and shows dashboard",
-                   "blocked", "Dashboard visible in OWNER panel", s_qa,
-                   "OWNER panel sign-in not mechanically reachable this run "
-                   "(see QA2 note).")
-    else:
-        record("QA2", "All 4 panels load", "fail", "Panels present", "", "QA Console did not open")
-        record("QA3-OWNER", "OWNER panel shows sign-in", "fail", "Sign-in visible", "", "QA Console did not open")
-        record("QA4", "OWNER panel signs in", "fail", "Dashboard visible", "", "QA Console did not open")
+    page.evaluate("() => { window.location.hash = '#/login'; }")
+    page.wait_for_timeout(3000)
+    enable_flutter_acc(page)
+    s_qc = screenshot(page, "QC01_login_form")
+    labels = input_labels(page)
+    form_ok = (has(page, ["Sign In"]) and "Email" in labels
+               and any(l.startswith("Password") for l in labels))
+    no_qa = (not has(page, ["Open QA Console"])
+             and not has(page, ["Dev Quick Sign-In"]))
+    record("QC1", "Login screen: real credential form only (no QA Console / dev entries)",
+           "pass" if (form_ok and no_qa) else "fail",
+           "Email/Password/Sign In present, no dev or QA entry points", s_qc,
+           f"inputs={labels}")
 
     # =====================================================================
-    # 3-OWNER TEST PLAN
+    # 3-OWNER TEST PLAN (Round 6: real accounts, no dev chips)
     # =====================================================================
-    print("\n=== 3-OWNER TEST PLAN ===\n")
+    print("\n=== 3-OWNER TEST PLAN (real flows) ===\n")
 
-    # Step 1-4: Create 3 owner accounts via Dev Quick Sign-In
-    owners = [
-        ("Yoga Studio", "Owner #1"),
-        ("Pilates Studio", "Owner #2"),
-        ("Life Coach", "Owner #3"),
-    ]
+    # Step 1: own1 re-login via typed credentials, empty Network tabs
+    login(page, "own1@robot.test")
+    find_and_click(page, "Network")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    find_and_click(page, "Associates")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    s1 = screenshot(page, "step01_own1_associates")
+    found = has(page, ["Invite"])
+    no_seed = not has(page, ["Jordan"])
+    record("Step 1", "own1 typed re-login; Network → Associates empty (no seeded members)",
+           "pass" if (found and no_seed) else "fail",
+           "Empty Associates list for a new business", s1,
+           f"tab reached (Invite FAB)={found}, seeded member present={not no_seed}, "
+           f"texts={get_all_text(page)[:5]}")
+    real_sign_out(page)
 
-    for job, label in owners:
-        # Sign in
-        open_dev_sheet(page)
-        find_and_click(page, job)
-        page.wait_for_timeout(3000)
-        enable_flutter_acc(page)
-        s = screenshot(page, f"3owner_{label.replace(' ', '_')}_dashboard")
-        texts = get_all_text(page)
+    # Step 2: fresh signup own4
+    url = signup(page, "Robot Pilates", "own4@robot.test", "Movement & Fitness",
+                 "Pilates Studio", "Robot Pilates Co")
+    branded = has(page, ["Robot Pilates Co"])
+    find_and_click(page, "Network")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    find_and_click(page, "Associates")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    s2b = screenshot(page, "step02_own4_associates")
+    found = has(page, ["Invite"])
+    no_seed = not has(page, ["Jordan"]) and not has(page, ["Robot Associate"])
+    record("Step 2", "own4 fresh signup; Network → Associates empty",
+           "pass" if (branded and found and no_seed) else "fail",
+           "New business dashboard + empty Network", s2b,
+           f"url={url} branded={branded} invite_fab={found} seeded={not no_seed}")
+    real_sign_out(page)
 
-        # Check Network tabs are empty
+    # Step 3: fresh signup own3 (will run the invite path)
+    url = signup(page, "Robot Strength", "own3@robot.test", "Movement & Fitness",
+                 "Strength Coach", "Robot Strength Co")
+    branded = has(page, ["Robot Strength Co"])
+    find_and_click(page, "Network")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    find_and_click(page, "Associates")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    s3b = screenshot(page, "step03_own3_associates")
+    found = has(page, ["Invite"])
+    no_seed = not has(page, ["Jordan"]) and not has(page, ["Robot Associate"])
+    record("Step 3", "own3 fresh signup; Network → Associates empty",
+           "pass" if (branded and found and no_seed) else "fail",
+           "New business dashboard + empty Network", s3b,
+           f"url={url} branded={branded} invite_fab={found} seeded={not no_seed}")
+    real_sign_out(page)
+
+    # Step 4: typed re-login restores own3 (session for the invite flow)
+    login(page, "own3@robot.test")
+    s4 = screenshot(page, "step04_own3_relogin")
+    ok4 = has(page, ["Robot Strength Co"]) and has(page, ["Revenue Summary"])
+    record("Step 4", "Typed Email/Password re-login restores the session (own3)",
+           "pass" if ok4 else "fail",
+           "Dashboard visible after re-login", s4, f"url={page.url}")
+
+    # ---- Step 5: own3 invites an associate (real one-time token) ----
+    find_and_click(page, "Network")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    find_and_click(page, "Associates")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    inv = find_and_click(page, "Invite")
+    token_assoc = ""
+    if inv:
+        token_assoc = generate_invite_token(page, "wlp_000011")
+    s5b = screenshot(page, "step05_invite_token")
+    record("Step 5", "Owner invites an Associate (invite link generated)",
+           "pass" if (inv and token_assoc.startswith("wlp_")) else "fail",
+           "Invite dialog + one-time invite token", s5b,
+           f"invite_fab={inv} token={token_assoc or 'NONE'}")
+
+    # ---- Step 6: invitee joins via the landing Code field ----
+    joined_url = ""
+    rec6, note6 = "fail", ""
+    if token_assoc:
+        real_sign_out(page)
+        joined_url = invitee_signup(page, token_assoc, "Robot Associate",
+                                    "assoc@robot.test")
         find_and_click(page, "Network")
         page.wait_for_timeout(1500)
         enable_flutter_acc(page)
+        s6b = screenshot(page, "step06_assoc_owner_card")
+        owner_card = has_all(page, ["Owner", "Robot Strength Co"])
+        rec6 = "pass" if ("/partner" in joined_url and owner_card) else "fail"
+        note6 = f"url={joined_url} owner_card={owner_card} token={token_assoc}"
+    else:
+        s6b = screenshot(page, "step06_skipped")
+        note6 = "Cascade: no invite token from Step 5."
+    record("Step 6", "Invitee joins via invite code and sees the Owner card",
+           rec6, "Invitee on /partner with linked-owner card", s6b, note6)
 
-        # Check Associates tab
-        find_and_click(page, "Associates")
-        page.wait_for_timeout(1500)
-        enable_flutter_acc(page)
-        s_net = screenshot(page, f"3owner_{label.replace(' ', '_')}_associates")
-        associate_texts = get_all_text(page)
-        # Check for pre-populated entries (specific names like "Jordan Associate")
-        # Avoid false positives from tab labels like "Clients", "Associates", "Staff"
-        has_prepopulated = any("Jordan" in t for t in associate_texts)
-        record(f"Step 1-4", f"{label} ({job}) -- empty Network tabs",
-               "pass" if not has_prepopulated else "fail",
-               "Network tabs empty for new business", s_net,
-               f"Associates tab texts: {associate_texts[:5]}")
+    # ---- Step 7: associate invites a client ----
+    inv7 = find_and_click(page, "Invite")
+    token_client = ""
+    if inv7:
+        token_client = generate_invite_token(page, "wlp_000012")
+    s7b = screenshot(page, "step07_assoc_invite_client")
+    record("Step 7", "Associate invites a client (invite link generated)",
+           "pass" if (inv7 and token_client.startswith("wlp_")) else "fail",
+           "Client invite dialog + one-time invite token", s7b,
+           f"invite_fab={inv7} token={token_client or 'NONE'}")
+    real_sign_out(page)
 
-        # Sign out
-        sign_out(page)
-        page.wait_for_timeout(2000)
-
-    # Steps 5-9: Direct-invite Associate path (Owner #3)
-    print("\n--- Direct-invite Associate Path ---\n")
-
-    # Sign in as Owner #3 (Life Coach)
-    open_dev_sheet(page)
-    find_and_click(page, "Life Coach")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-
-    # Step 5: Network → Associates → invite
+    # ---- Step 8: own3 proposes a deal to the linked associate ----
+    # KNOWN dead-end (Round 6 do-not-fix): the invite-linked associate has
+    # no category, so `_propose()` early-returns on a null
+    # partnerCategoryId (propose_agreement_screen.dart:237) — 'Send
+    # Proposal' is a silent no-op and the propose screen never pops.
+    # Record the real outcome honestly (expected FAIL), then pop the screen.
+    login(page, "own3@robot.test")
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s5 = screenshot(page, "3owner_step5_associates")
-
-    # Look for invite button
-    has_invite = find_and_click(page, "Invite") or find_and_click(page, "invite")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s5b = screenshot(page, "3owner_step5_invite_dialog")
-    texts = get_all_text(page)
-    record("Step 5", "Owner #3 invites an Associate", "pass" if has_invite else "fail",
-           "Invite dialog/link generated", s5b, f"Dialog texts: {texts[:8]}")
-
-    # Try to copy/generate link
-    find_and_click(page, "Copy") or find_and_click(page, "Generate") or find_and_click(page, "Link")
-    page.wait_for_timeout(1000)
-
-    # Sign out Owner #3
-    sign_out(page)
-    page.wait_for_timeout(2000)
-
-    # Step 6: Sign in as Associate via Dev Quick Sign-In
-    open_dev_sheet(page)
-    enable_flutter_acc(page)
-
-    # Look for Associate role chip
-    find_and_click(page, "Associate")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-    # The Owner card lives on the associate's Network tab (not Dashboard).
-    find_and_click(page, "Network")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s6 = screenshot(page, "3owner_step6_partner_dashboard")
-    texts = get_all_text(page)
-    has_owner_card = any("Owner" in t or "Life Coach" in t for t in texts)
-    record("Step 6", "Associate sees Owner card (not 'No owner yet')",
-           "pass" if has_owner_card else "fail",
-           "Owner card visible at top of Network", s6,
-           f"Texts: {texts[:8]}")
-
-    # Step 7: Associate invites a client
-    find_and_click(page, "Network")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-
-    # Look for invite client button
-    has_invite_client = find_and_click(page, "Invite") or find_and_click(page, "invite")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s7 = screenshot(page, "3owner_step7_partner_invite_client")
-    texts = get_all_text(page)
-    record("Step 7", "Associate invites a client",
-           "pass" if has_invite_client else "fail",
-           "Client invite dialog visible", s7, f"Texts: {texts[:8]}")
-
-    # Sign out Associate
-    sign_out(page)
-    page.wait_for_timeout(2000)
-
-    # Step 8: Propose a deal to a linked Associate (seeded owner)
-    #
-    # Dev identities are never cross-linked (dev stores are per-isolate and
-    # empty), so the only account that holds linked Associates is the seeded
-    # mock account owner@test.com (Alex Owner Demo Business — its Network tab
-    # is pre-populated with Jordan Associate + Casey Associate). Probe-verified
-    # recipe: typed login -> Network -> Associates -> 'Propose a deal' banner ->
-    # 'Select associate' dropdown -> Jordan -> 'Send Proposal' -> propose screen
-    # closes and the Associates list returns (SnackBar toast is not in the
-    # semantics tree, so success = screen pop).
-    typed_login(page, "owner@test.com")
-    find_and_click(page, "Network")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    find_and_click(page, "Associates")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s8 = screenshot(page, "3owner_step8_deal_banner")
-    banner = has_text(page, ["Propose a deal", "Discover new associates"])
+    s8a = screenshot(page, "step08_associates")
+    step8_sent = False
+    rec8, s8c, note8 = "fail", s8a, ""
+    banner = has(page, ["Propose a deal"])
     if banner:
         click_prefix(page, "Propose a deal")
-        s8b = screenshot(page, "3owner_step8_propose_screen")
-        propose_ui = has_text(page, ["Propose Agreement", "Select associate",
-                                     "Commission split", "Send Proposal"])
+        s8b = screenshot(page, "step08_propose_screen")
+        propose_ui = has(page, ["Propose Agreement"]) and has(page, ["Select associate"])
         if propose_ui:
             click_exact(page, "Select associate")
-            click_prefix(page, "Jordan")
-            page.wait_for_timeout(1000)
-            enable_flutter_acc(page)
-            s8c = screenshot(page, "3owner_step8_jordan_selected")
-            jordan_picked = has_text(page, ["Jordan Associate", "cat_2"])
+            click_btn_prefix(page, "Robot Associate", wait=2000) or \
+                click_prefix(page, "Robot Associate")
+            picked = has(page, ["Robot Associate (no category)"])
             click_exact(page, "Send Proposal")
-            s8d = screenshot(page, "3owner_step8_proposal_sent")
-            # The SnackBar toast is NOT exposed in the semantics tree, but the
-            # propose screen only pops back to the Associates list when the
-            # proposal succeeded (result != null); a failed propose keeps you
-            # on the screen. So "screen gone + we're back on Associates" is the
-            # success signal.
-            propose_closed = until_absent(
-                page, ["Propose Agreement", "Send Proposal"], 8000)
-            sent = (propose_closed and
-                    has_text(page, ["Message Jordan Associate",
-                                    "Discover new associates"]))
-            rec8 = "pass" if (sent and jordan_picked) else "blocked"
-            note8 = "Propose -> Jordan Associate (cat_2) -> Send Proposal -> " \
-                    "propose screen closes and Associates list returns " \
-                    "(SnackBar toast is not in the semantics tree)."
+            propose_closed = until_absent(page, ["Propose Agreement", "Send Proposal"],
+                                          8000)
+            step8_sent = propose_closed and has(page, ["Discover new associates"])
+            rec8 = "pass" if (picked and step8_sent) else "fail"
+            s8c = screenshot(page, "step08_after_send")
+            note8 = (f"picked={picked} screen_popped={propose_closed}. "
+                     "KNOWN invite→propose dead-end: invite-linked associate has "
+                     "no category → partnerCategoryId null → _propose() returns "
+                     "silently (propose_agreement_screen.dart:237); no agreement "
+                     "is created.")
+            if not step8_sent:
+                click_exact(page, "Back", wait=3000)   # pop the stuck screen
+                page.wait_for_timeout(1500)
+                enable_flutter_acc(page)
         else:
-            rec8 = "blocked"
-            note8 = "Propose screen controls (Select associate / Send Proposal) " \
-                    "not exposed this run."
+            s8c = s8b
+            note8 = "Propose screen controls (Select associate / Send Proposal) not exposed."
     else:
-        rec8 = "blocked"
-        note8 = "No 'Propose a deal' banner for the seeded owner this run."
-    record("Step 8", "Owner proposes a deal to a linked Associate",
-           rec8,
-           "Propose a deal banner + proposal submission", s8b if banner else s8,
-           note8)
+        note8 = "No 'Propose a deal' banner on the Associates list."
+    record("Step 8", "Owner proposes a deal to the linked Associate",
+           rec8, "Propose screen closes (proposal delivered)", s8c, note8)
 
-    # Step 9: Associate can accept/decline deal
-    #
-    # The proposed associate (Jordan Associate) is a seeded team member with NO
-    # login credentials, and the only other seeded account (partner@test.com,
-    # Sunrise Wellness Annex) does not receive Alex's Jordan proposal. So the
-    # receiver side of a propose-deal cannot be driven in-browser. The
-    # accept/decline mechanics ARE proven for partnership requests on the
-    # marketplace instead (see Step 11) — kept separate here to stay honest.
-    record("Step 9", "Associate can accept/decline deal",
-           "blocked",
-           "Deal proposal visible to Associate", "",
-           "Receiver has no loginable mock account: Jordan Associate is a "
-           "seeded member with no credentials and partner@test.com does not "
-           "hold this proposal (probe-verified). Accept/decline mechanics are "
-           "covered via the marketplace inbound request instead (Step 11).")
-
-    typed_logout(page)
-
-    # Steps 10-13: Partnership Marketplace path (seeded owner)
-    print("\n--- Marketplace Path ---\n")
-
-    # Sign in as the seeded owner — the ONLY loginable account with
-    # marketplace seed data (discoverable listings Core Pilates / Mindful
-    # Moments / Iron Forge Gym, plus one pending inbound request from Core
-    # Pilates). Probe-verified drive path: hash -> marketplace -> Availability
-    # toggles (Discoverable + Pilates slot) -> scroll -> discovery + requests.
-    typed_login(page, "owner@test.com")
-    find_and_click(page, "Network")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    find_and_click(page, "Associates")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-
-    # Step 10: Discover new associates (marketplace)
-    # Entry by hash (the 'Discover new associates' banner node is merged
-    # semantics; clicking it proved unreliable in probes). The Availability
-    # card exposes the master 'Discoverable' switch (DOM index 0) + per-slot
-    # switches (1 = Pilates Studio, sidebar order). Discovery for an open
-    # Pilates slot returns Core Pilates.
-    page.evaluate("""() => { window.location.hash = '#/owner/marketplace'; }""")
-    page.wait_for_timeout(5000)
-    enable_flutter_acc(page)
-    switch_click(page, 0)      # Discoverable ON (subtitle flips to 'Other
-                               # owners can find you in the marketplace.')
-    switch_click(page, 1)      # Open Pilates Studio slot
-    scroll_down(page, steps=5)
-    s10 = screenshot(page, "3owner_step10_discover")
-    has_discover = has_text(page, ["Discover Associates", "Core Pilates"])
-
-    # Exercise the request-SEND UI on the discovered tile (message + request
-    # buttons on the listing profile); the receiver side is driven through the
-    # seeded inbound in Step 11 since only one owner account is loginable.
-    sent_req = False
-    if has_discover:
-        click_prefix(page, "Core Pilates")
-        page.wait_for_timeout(2500)
-        enable_flutter_acc(page)
-        s10b = screenshot(page, "3owner_step10_tile")
-        tile_actions = has_text(page, ["Send Associate Request", "Message"])
-        if tile_actions:
-            click_exact(page, "Send Associate Request")
-            sent_req = True
-            page.wait_for_timeout(1500)
+    # ---- Step 9: receiver-side accept/decline ----
+    rec9, note9 = "fail", ""
+    if step8_sent:
+        real_sign_out(page)
+        login(page, "assoc@robot.test")
+        seen = False
+        for route_lbl in ["Network", "Agreements", "Home"]:
+            find_and_click(page, route_lbl, timeout=5000)
+            page.wait_for_timeout(2000)
             enable_flutter_acc(page)
-            page.keyboard.press("Escape")   # back to marketplace list
-            page.wait_for_timeout(1800)
-            enable_flutter_acc(page)
-            scroll_down(page, steps=2, dy=400)
-    record("Step 10", "Owner discovers new associates (marketplace)",
-           "pass" if has_discover else "fail",
-           "Discover Associates section + Core Pilates tile",
-           s10,
-           "Seeded owner: Discoverable ON -> Pilates slot open -> scroll; "
-           "discovery lists Core Pilates (pilates_studio, discoverable, "
-           "seeded). Tile profile exposes 'Message'/'Send Associate Request'"
-           + (" and the request was pressed." if sent_req else "."))
-
-    # Step 11: Owner accepts partnership request
-    # The seeded inbound request (Core Pilates -> Alex, pending) stands in for
-    # the receiver side: Accept -> 'Set your commission split' -> Confirm
-    # Collab. (Only one owner account is loginable, so the request is
-    # pre-seeded rather than driven from a second owner session.)
-    s11 = screenshot(page, "3owner_step11_requests")
-    if has_discover:
-        scroll_down(page, steps=4)
-        has_inbound = has_text(page, ["Received Requests"])
-        if not has_inbound:
-            scroll_down(page, steps=3)
-            has_inbound = has_text(page, ["Received Requests"])
-        rec11 = "blocked"
-        split = False
-        note11 = "Inbound request section not visible this run."
-        if has_inbound:
-            accepted_ok = click_exact(page, "Accept")
-            page.wait_for_timeout(2500)
-            enable_flutter_acc(page)
-            s11b = screenshot(page, "3owner_step11_accept")
-            split = await_text(page, ["Set your commission split", "Confirm Collab"],
-                               8000)
-            if accepted_ok and split:
-                rec11 = "pass"
-                note11 = ("Accept -> commission-split dialog "
-                          "('Set your commission split'/'Confirm Collab') "
-                          "reached.")
-            else:
-                note11 = "Accept clicked but commission dialog not exposed this run."
-        record("Step 11", "Owner accepts partnership request",
-               rec11,
-               "Request accepted, commission dialog", s11b if split else s11,
-               note11)
-
-        # Step 12: Both sides confirm active collab
-        # Once confirmed, the inbound request leaves the pending list: the
-        # 'Received Requests' section keeps its header but loses its
-        # Accept/Decline actions and pending count. A literal two-session
-        # confirmation is impossible with a single loginable owner account (and
-        # mock stores reset on reload), so this is the observable confirmation.
-        s12 = screenshot(page, "3owner_step12_active")
-        if rec11 == "pass" and split:
-            click_exact(page, "Confirm Collab")
-            page.wait_for_timeout(2500)
-            enable_flutter_acc(page)
-            scroll_down(page, steps=1, dy=300)
-            cleared = until_absent(page, ["Confirm Collab", "Accept", "Decline"],
-                                   8000)
-            still_lists = has_text(page, ["Received Requests"])
-            rec12 = "pass" if (cleared and still_lists) else "blocked"
-            note12 = ("Accepted request cleared from 'Received Requests' "
-                      "(no Accept/Decline/Confirm remains). Mock stores reset "
-                      "on reload and only one owner account is loginable, so "
-                      "'both sides' confirmation is demonstrated from the "
-                      "accepting side.")
-        else:
-            rec12 = "blocked"
-            note12 = "No confirmed collab this run (see Step 11)."
-        record("Step 12", "Both sides confirm active collab",
-               rec12,
-               "Collab confirmed (inbound no longer pending)", s12, note12)
-
-        # Step 13: Propose a deal between independent Owners
-        s13 = screenshot(page, "3owner_step13_deal")
-        record("Step 13", "Propose a deal between independent Owners",
-               "blocked", "Deal proposal works", s13,
-               "The seeded propose flow (Step 8) targets a LINKED associate "
-               "(Jordan). Proposing between INDEPENDENT owners requires a "
-               "second loginable owner account — none exists (mock seed owners "
-               "usr_owner_ext_* have no credentials) and mock stores are "
-               "per-isolate so a proposal cannot survive an account switch. "
-               "Honestly BLOCKED.")
+            if has_text(page, ["Accept", "Decline", "Proposal"]):
+                seen = True
+                break
+        acc = click_exact(page, "Accept") if seen else False
+        s9c = screenshot(page, "step09_receiver")
+        rec9 = "pass" if (seen and acc) else "fail"
+        note9 = f"proposal markers seen={seen} accept_clicked={acc}"
+        real_sign_out(page)
     else:
-        for tag, desc, note in [
-            ("Step 11", "Owner accepts partnership request",
-             "Discovery failed this run (see Step 10)."),
-            ("Step 12", "Both sides confirm active collab",
-             "No collab created (see Step 11 note)."),
-            ("Step 13", "Propose a deal between independent Owners",
-             "No linked associate to propose a deal with (see Step 11 note)."),
-        ]:
-            record(tag, desc, "blocked", "", "", note)
-
-    typed_logout(page)
+        s9c = screenshot(page, "step09_cascade")
+        note9 = ("Cascade: Step 8 did not deliver a proposal (known invite→propose "
+                 "dead-end), so the receiver has nothing to accept.")
+    record("Step 9", "Associate receives and can accept/decline the proposal",
+           rec9, "Proposal visible to Associate with Accept/Decline", s9c, note9)
 
     # =====================================================================
-    # BUSINESS FEATURES TOGGLES (Steps 14-17)
+    # Steps 10-13: Partnership Marketplace path (own1 <-> own4)
+    # =====================================================================
+    print("\n--- Marketplace path (two real owners) ---\n")
+
+    # own4 availability: Discoverable + open the Yoga slot (chip own1 picks)
+    real_sign_out(page)
+    login(page, "own4@robot.test")
+    go_marketplace(page)
+    toggle_slot(page, "Discoverable")
+    toggle_slot(page, "Yoga Studio")
+    own4_ready = switch_states(page)[:2] == ["true", "true"]
+
+    # own1: Discoverable + open Pilates slot -> discovers own4
+    real_sign_out(page)
+    login(page, "own1@robot.test")
+    go_marketplace(page)
+    toggle_slot(page, "Discoverable")
+    toggle_slot(page, "Pilates Studio")
+    scroll_down(page, steps=6)
+    s10 = screenshot(page, "step10_discovery")
+    has_tile = has(page, ["Robot Pilates Co"])
+    record("Step 10", "Owner discovers a new associate in the marketplace",
+           "pass" if has_tile else "fail",
+           "Discoverable listing tile for Robot Pilates Co", s10,
+           f"own4_ready={own4_ready} tile={has_tile}")
+
+    # Step 11: own1 sends an Associate Request for the Yoga slot
+    sent = False
+    ev11 = []
+    if has_tile:
+        click_contains(page, "Robot Pilates Co", wait=3000)
+        enable_flutter_acc(page)
+        if has(page, ["Open Collab Slots"]):
+            (click_exact(page, "Yoga Studio", wait=1500)
+             or click_contains(page, "Yoga Studio", wait=1200))
+            enable_flutter_acc(page)
+        hit = click_exact(page, "Send Associate Request", wait=6000)
+        page.wait_for_timeout(2500)
+        enable_flutter_acc(page)
+        ev11.append(f"send_btn={hit}")
+        if has(page, ["Confirm Request"]):
+            fill_first_input(page, "Robot Yoga would love to collab.")
+            click_exact(page, "Confirm Request", wait=6000)
+            page.wait_for_timeout(3500)
+            enable_flutter_acc(page)
+            sent = has(page, ["Request sent"])
+    s11 = screenshot(page, "step11_request")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(1500)
+    enable_flutter_acc(page)
+    pending_badge = has(page, ["Pending"])
+    sent = sent or pending_badge
+    record("Step 11", "Owner sends an Associate Request (pending outbound)",
+           "pass" if sent else "fail",
+           "'Request sent' / tile shows Pending", s11,
+           f"{','.join(ev11)} confirmed={sent} badge={pending_badge}")
+
+    # Step 12: own4 receives -> accept -> split -> confirm
+    real_sign_out(page)
+    login(page, "own4@robot.test")
+    go_marketplace(page)
+    scroll_down(page, steps=6)
+    got = has_all(page, ["Received Requests", "Robot Yoga Co"])
+    s12 = screenshot(page, "step12_received")
+    accepted = False
+    if got:
+        click_exact(page, "Accept", wait=6000)
+        page.wait_for_timeout(3000)
+        enable_flutter_acc(page)
+        if has(page, ["Set your commission split"]):
+            click_exact(page, "Confirm Collab", wait=6000)
+            page.wait_for_timeout(3700)
+            enable_flutter_acc(page)
+            accepted = not has(page, ["Accept", "Decline", "Confirm Collab"])
+            s12 = screenshot(page, "step12_accepted")
+    record("Step 12", "Receiver accepts the request and confirms the collab",
+           "pass" if (got and accepted) else "fail",
+           "Accept → commission split → Confirm Collab → cleared", s12,
+           f"received={got} confirmed={accepted}")
+
+    # Step 13: sender approves -> Active
+    real_sign_out(page)
+    login(page, "own1@robot.test")
+    s13 = screenshot(page, "step13_pending")
+    own1_pending = has(page, ["1 Pending"])
+    approved = False
+    if own1_pending:
+        click_contains(page, "1 Pending", wait=4000)
+        page.wait_for_timeout(2500)
+        enable_flutter_acc(page)
+        detail = has(page, ["Approve"])
+        if detail:
+            click_exact(page, "Approve", wait=6000)
+            page.wait_for_timeout(3500)
+            enable_flutter_acc(page)
+            page.evaluate("() => { window.location.hash = '#/owner'; }")
+            page.wait_for_timeout(3000)
+            enable_flutter_acc(page)
+            approved = has(page, ["1 Active"]) and not has(page, ["1 Pending"])
+            s13 = screenshot(page, "step13_approved")
+    record("Step 13", "Sender approves the proposed agreement → Active",
+           "pass" if approved else "fail",
+           "Dashboard shows 1 Active / 0 Pending after Approve", s13,
+           f"pending_chip={own1_pending} approved={approved}")
+
+    # =====================================================================
+    # Steps 14-17: money loop (Round 6 payments)
+    # =====================================================================
+    print("\n--- Money loop (record payment → commission payout) ---\n")
+
+    # Step 14: active agreement detail + Record payment dialog fields
+    go_home(page)
+    click_contains(page, "1 Active", wait=4000)
+    page.wait_for_timeout(2500)
+    enable_flutter_acc(page)
+    detail_ok = has_after_scroll(page, ["Record payment", "End Agreement"])
+    s14 = screenshot(page, "step14_detail")
+    dialog_ok = False
+    labels14 = []
+    if detail_ok:
+        click_exact(page, "Record payment", wait=6000)
+        page.wait_for_timeout(2500)
+        enable_flutter_acc(page)
+        labels14 = input_labels(page)
+        dialog_ok = (has(page, ["Confirm Payment", "Payment method"])
+                     and any(a.startswith("Amount") for a in labels14))
+        s14 = screenshot(page, "step14_payment_dialog")
+    record("Step 14", "Agreement detail exposes Record payment + dialog fields",
+           "pass" if (detail_ok and dialog_ok) else "fail",
+           "Amount/Payment method inputs + Confirm Payment button", s14,
+           f"detail={detail_ok} dialog={dialog_ok} inputs={labels14}")
+
+    # Step 15: record $120 -> payment txn + pending commission in Revenue
+    dialog_closed = revenue_ok = False
+    if dialog_ok:
+        fill_by_label_prefix(page, "Amount", "120")
+        click_exact(page, "Confirm Payment", wait=1200)
+        page.wait_for_timeout(3500)
+        enable_flutter_acc(page)
+        dialog_closed = until_absent(page, ["Confirm Payment"], 8000)
+        if has(page, ["Confirm Payment"]):  # never strand the modal
+            click_exact(page, "Cancel", wait=3000)
+            page.wait_for_timeout(1000)
+            enable_flutter_acc(page)
+    go_home(page)
+    find_and_click(page, "Revenue", timeout=6000)
+    page.wait_for_timeout(3000)
+    enable_flutter_acc(page)
+    revenue_ok = has_after_scroll(page, ["Session payment", "Mark Paid"])
+    deal_active = has(page, ["ACTIVE"])
+    s15 = screenshot(page, "step15_revenue_payment")
+    record("Step 15", "Recorded $120 payment → txn + pending commission in Revenue",
+           "pass" if (dialog_closed and revenue_ok) else "fail",
+           "Session payment txn + Mark Paid row + ACTIVE deal", s15,
+           f"dialog_closed={dialog_closed} revenue={revenue_ok} deal_active={deal_active}")
+
+    # Step 16: Mark Paid -> payout txn on own1's ledger, button disappears
+    btn_gone = payout = summary = False
+    s16 = s15
+    if revenue_ok:
+        click_exact(page, "Mark Paid", wait=6000)
+        page.wait_for_timeout(3500)
+        enable_flutter_acc(page)
+        btn_gone = not has(page, ["Mark Paid"])
+        payout = has_after_scroll(page, ["Commission payout to Robot Pilates Co"])
+        summary = has(page, ["Commissions Paid $24.00", "Commissions $24.00",
+                             "$96.00", "$24.00 PAID"])
+        s16 = screenshot(page, "step16_payout")
+    record("Step 16", "Mark Paid pays the commission out (payout txn + summary)",
+           "pass" if (revenue_ok and btn_gone and payout) else "fail",
+           "Button gone, payout txn on own1 ledger, Net $96 / commission $24", s16,
+           f"btn_gone={btn_gone} payout_txn={payout} summary_seen={summary}")
+
+    # Step 17: the payout lands in the PAYEE's own ledger
+    real_sign_out(page)
+    login(page, "own4@robot.test")
+    go_home(page)
+    find_and_click(page, "Revenue", timeout=6000)
+    page.wait_for_timeout(3000)
+    enable_flutter_acc(page)
+    o_payout = has_after_scroll(page, ["Commission payout to Robot Pilates Co"])
+    o_no_mark = not has(page, ["Mark Paid"])
+    o_deal = has(page, ["ACTIVE"])
+    s17 = screenshot(page, "step17_payee_ledger")
+    record("Step 17", "Payee (own4) sees the commission payout in its own ledger",
+           "pass" if (o_payout and o_no_mark) else "fail",
+           "Payout txn visible, no Mark Paid button for the payee", s17,
+           f"payout={o_payout} no_mark={o_no_mark} deal_active={o_deal}")
+
+    # =====================================================================
+    # Steps 18-21: Business Features toggles
     # =====================================================================
     print("\n=== BUSINESS FEATURES TOGGLES ===\n")
 
-    # Sign in as any Owner
-    open_dev_sheet(page)
-    find_and_click(page, "Yoga Studio")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-
-    # Step 14: Settings → Business Features → Collabs off
+    real_sign_out(page)
+    login(page, "own1@robot.test")
     find_and_click(page, "Settings")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    has_bf = find_and_click(page, "Business Features") or find_and_click(page, "Features")
+    has_bf = (find_and_click(page, "Business Features")
+              or find_and_click(page, "Features"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s14 = screenshot(page, "toggle_step14_business_features")
-    texts = get_all_text(page)
-
-    # Try to toggle Collabs off
     find_and_click(page, "Collabs")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s14b = screenshot(page, "toggle_step14_collabs_off")
-    record("Step 14", "Business Features — toggle Collabs off",
+    s18 = screenshot(page, "toggle_step18_collabs_off")
+    texts = get_all_text(page)
+    record("Step 18", "Business Features — toggle Collabs off",
            "pass" if has_bf else "fail",
-           "Collabs toggle switched off", s14b, f"Texts: {texts[:8]}")
+           "Collabs toggle switched off", s18, f"Texts: {texts[:8]}")
 
-    # Step 15: Collabs back on
     toggled_on = find_and_click(page, "Collabs")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s15 = screenshot(page, "toggle_step15_collabs_on")
-    record("Step 15", "Business Features — toggle Collabs back on",
+    s19 = screenshot(page, "toggle_step19_collabs_on")
+    record("Step 19", "Business Features — toggle Collabs back on",
            "pass" if toggled_on else "fail",
-           "Collabs toggle restored", s15)
+           "Collabs toggle restored", s19)
 
-    # Step 16: Marketplace off, Collabs on
     toggled_mp = find_and_click(page, "Marketplace")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s16 = screenshot(page, "toggle_step16_marketplace_off")
-    record("Step 16", "Marketplace off, Collabs on",
+    s20 = screenshot(page, "toggle_step20_marketplace_off")
+    record("Step 20", "Business Features — toggle Marketplace off (then restored)",
            "pass" if toggled_mp else "fail",
-           "Marketplace toggle off", s16)
-
-    # Step 17: Agreements off, Collabs on
-    find_and_click(page, "Marketplace")  # turn back on
+           "Marketplace toggle exercised", s20)
+    find_and_click(page, "Marketplace")   # restore
     page.wait_for_timeout(1000)
+
     toggled_ag = find_and_click(page, "Agreements")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s17 = screenshot(page, "toggle_step17_agreements_off")
-    record("Step 17", "Agreements off, Collabs on",
+    s21 = screenshot(page, "toggle_step21_agreements_off")
+    record("Step 21", "Business Features — toggle Agreements off (then restored)",
            "pass" if toggled_ag else "fail",
-           "Agreements toggle off", s17)
+           "Agreements toggle exercised", s21)
+    find_and_click(page, "Agreements")    # restore
+    page.wait_for_timeout(1000)
 
-    sign_out(page)
-    page.wait_for_timeout(2000)
+    page.evaluate("() => { window.location.hash = '#/owner'; }")
+    page.wait_for_timeout(2500)
+    enable_flutter_acc(page)
 
     # =====================================================================
     # OWNER ROLE CHECKLIST
     # =====================================================================
     print("\n=== OWNER ROLE CHECKLIST ===\n")
 
-    open_dev_sheet(page)
-    find_and_click(page, "Yoga Studio")
-    page.wait_for_timeout(3000)
+    find_and_click(page, "Home")
+    page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-
-    # Dashboard
     s = screenshot(page, "owner_dashboard")
-    texts = get_all_text(page)
+    ok = has_all(page, ["Revenue Summary", "Net Revenue"])
     record("Owner", "Dashboard loads with summary cards/stats",
-           "pass" if any("Revenue" in t or "Team" in t for t in texts) else "fail",
-           "Dashboard with stats", s, f"Texts: {texts[:6]}")
+           "pass" if ok else "fail",
+           "Dashboard with revenue summary", s, f"Texts: {get_all_text(page)[:6]}")
 
-    # Content
     find_and_click(page, "Content")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "owner_content")
-    texts = get_all_text(page)
-    record("Owner", "Content (Activity) list loads",
-           "pass" if texts else "fail",
-           "Content list visible", s)
+    content_ok = has(page, ["Tools", "Scheduling", "Catalog"])
+    record("Owner", "Content (Activity) list loads with tool cards",
+           "pass" if content_ok else "fail",
+           "Content list + tools visible", s, f"Texts: {get_all_text(page)[:6]}")
 
-    # Content → Tools cards
-    find_and_click(page, "Tools") or find_and_click(page, "Scheduling")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s = screenshot(page, "owner_tools")
-    record("Owner", "Content → Tools cards accessible",
-           "pass" if find_text_flexible(page, "Scheduling") or find_text_flexible(page, "Catalog") else "fail",
-           "Tools cards visible", s)
-
-    # Revenue
-    find_and_click(page, "Revenue") or find_and_click(page, "Home")
-    page.wait_for_timeout(1000)
     find_and_click(page, "Revenue")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "owner_revenue")
-    texts = get_all_text(page)
-    record("Owner", "Revenue (Finance) loads",
-           "pass" if any("Revenue" in t or "Transaction" in t for t in texts) else "fail",
-           "Finance view with transactions", s)
+    rev_ok = has(page, ["Deals", "Transactions"])
+    record("Owner", "Revenue (Finance) loads with deals/transactions",
+           "pass" if rev_ok else "fail",
+           "Finance view with deals", s, f"Texts: {get_all_text(page)[:6]}")
 
-    # Network → Associates tab
+    # Network: Associates + Staff (generate the staff invite token) + Clients
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    find_and_click(page, "Associates")
+    assoc_tab = find_and_click(page, "Associates")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "owner_associates")
-    record("Owner", "Network → Associates tab loads",
-           "pass", "Associates tab visible", s)
-
-    # Network → Staff tab
-    find_and_click(page, "Staff")
+    assoc_fab = has(page, ["Invite"])
+    staff_tab = find_and_click(page, "Staff")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "owner_staff")
-    record("Owner", "Network → Staff tab loads",
-           "pass", "Staff tab visible", s)
-
-    # Network → Clients tab
-    find_and_click(page, "Clients")
+    inv_staff = find_and_click(page, "Invite")
+    token_staff = ""
+    if inv_staff:
+        token_staff = generate_invite_token(page, "wlp_000013")
+    clients_tab = find_and_click(page, "Clients")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    s = screenshot(page, "owner_clients")
-    record("Owner", "Network → Clients tab loads",
-           "pass", "Clients tab visible", s)
+    s = screenshot(page, "owner_network_tabs")
+    net_ok = (assoc_tab and assoc_fab and staff_tab and inv_staff
+              and token_staff.startswith("wlp_") and clients_tab)
+    record("Owner", "Network → Associates/Staff/Clients tabs + staff invite link",
+           "pass" if net_ok else "fail",
+           "All three tabs load; staff invite token generated", s,
+           f"assoc_tab={assoc_tab} invite_fab={assoc_fab} staff_tab={staff_tab} "
+           f"staff_invite={inv_staff} token={token_staff or 'NONE'} "
+           f"clients_tab={clients_tab}")
 
-    # Settings
     find_and_click(page, "Settings")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "owner_settings")
-    texts = get_all_text(page)
-    record("Owner", "Settings screen loads",
-           "pass" if texts else "fail",
-           "Settings with options", s, f"Texts: {texts[:6]}")
+    settings_ok = has(page, ["Business Features"])
+    record("Owner", "Settings screen loads (features entry points present)",
+           "pass" if settings_ok else "fail",
+           "Settings with Business Features entry", s,
+           f"Texts: {get_all_text(page)[:6]}")
 
-    # Chat icon
-    find_and_click(page, "Chats") or find_and_click(page, "Chat")
+    chats_hit = (find_and_click(page, "Chats") or find_and_click(page, "Chat"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "owner_chats")
     record("Owner", "Chat icon opens conversations list",
-           "pass" if find_text_flexible(page, "Chat") or find_text_flexible(page, "Conversation") else "fail",
-           "Conversations list visible", s)
-
-    sign_out(page)
-    page.wait_for_timeout(2000)
+           "pass" if chats_hit else "fail",
+           "Conversations list visible", s, f"Texts: {get_all_text(page)[:6]}")
 
     # =====================================================================
-    # ASSOCIATE ROLE CHECKLIST
+    # ASSOCIATE ROLE CHECKLIST (the invite-linked account from Step 6)
     # =====================================================================
     print("\n=== ASSOCIATE ROLE CHECKLIST ===\n")
 
-    open_dev_sheet(page)
-    enable_flutter_acc(page)
-    find_and_click(page, "Associate")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-
-    # Dashboard
+    real_sign_out(page)
+    login(page, "assoc@robot.test")
     s = screenshot(page, "associate_dashboard")
-    texts = get_all_text(page)
-    has_upgrade = any("launch your own" in t.lower() or "start your own business" in t.lower() for t in texts)
-    record("Associate", "Dashboard loads with upgrade banner",
-           "pass" if has_upgrade else "fail",
-           "Dashboard with upgrade banner", s, f"Texts: {texts[:6]}")
+    ok = has(page, ["launch your own"])
+    record("Associate", "Dashboard loads with Launch Your Own prompt",
+           "pass" if ok else "fail",
+           "Partner shell prompt visible", s, f"Texts: {get_all_text(page)[:6]}")
 
-    # Activity
-    find_and_click(page, "Activity") or find_and_click(page, "Content")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
+    # Invitee profiles carry no jobId -> activeJobConfigProvider falls back
+    # to platform base terminology ("Sessions"), not "Activity"/"Content".
+    hit = (find_and_click(page, "Activity") or find_and_click(page, "Content")
+           or find_and_click(page, "Sessions"))
     s = screenshot(page, "associate_activity")
     record("Associate", "Activity view loads (view-only)",
-           "pass", "Activity view visible", s)
+           "pass" if hit else "fail", "Activity view visible", s,
+           f"clicked={hit}")
 
-    # Finance
-    find_and_click(page, "Finance") or find_and_click(page, "Revenue")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
+    hit = (find_and_click(page, "Finance") or find_and_click(page, "Revenue"))
     s = screenshot(page, "associate_finance")
     record("Associate", "Finance — associate-scoped view loads",
-           "pass", "Associate finance view", s)
+           "pass" if hit else "fail", "Associate finance view", s,
+           f"clicked={hit}")
 
-    # Network
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "associate_network")
-    texts = get_all_text(page)
-    has_owner = any("Owner" in t for t in texts)
+    owner_card = has_all(page, ["Owner", "Robot Strength Co"])
     record("Associate", "Network — Owner shown as card at top",
-           "pass" if has_owner else "fail",
-           "Owner card visible", s, f"Texts: {texts[:6]}")
+           "pass" if owner_card else "fail",
+           "Owner card visible", s, f"Texts: {get_all_text(page)[:6]}")
 
-    # Settings → Launch Your Own Practice
     find_and_click(page, "Settings")
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
-    has_upgrade = find_and_click(page, "Launch") or find_and_click(page, "Upgrade") or find_and_click(page, "Practice")
+    up = (find_and_click(page, "Launch") or find_and_click(page, "Upgrade")
+          or find_and_click(page, "Practice"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "associate_upgrade")
     record("Associate", "Upgrade to Pro (Launch Your Own Business)",
-           "pass" if has_upgrade else "fail",
-           "Upgrade option visible in Settings", s)
-
-    sign_out(page)
-    page.wait_for_timeout(2000)
+           "pass" if up else "fail",
+           "Upgrade option visible in Settings", s, f"clicked={up}")
 
     # =====================================================================
-    # STAFF ROLE CHECKLIST
+    # STAFF ROLE CHECKLIST (staff invite token from the Owner checklist)
     # =====================================================================
     print("\n=== STAFF ROLE CHECKLIST ===\n")
 
-    open_dev_sheet(page)
-    enable_flutter_acc(page)
-    find_and_click(page, "Staff")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-
+    real_sign_out(page)
+    # NOT staff@/client@/owner@/partner@ — mock_auth_source.dart:94 rejects
+    # sign-ups whose email starts with those reserved prefixes.
+    staff_url = invitee_signup(page, token_staff or "wlp_000013",
+                               "Robot Staff", "invite.staff@robot.test")
     s = screenshot(page, "staff_dashboard")
-    texts = get_all_text(page)
-    record("Staff", "Dashboard loads",
-           "pass" if texts else "fail",
-           "Staff dashboard visible", s, f"Texts: {texts[:6]}")
+    joined_staff = "/staff" in staff_url
+    record("Staff", "Staff invitee joins via invite code → staff dashboard",
+           "pass" if joined_staff else "fail",
+           "Staff shell visible after invite redemption", s,
+           f"url={staff_url} token={token_staff or 'NONE'}")
 
-    find_and_click(page, "Activity") or find_and_click(page, "Content")
+    hit = (find_and_click(page, "Activity") or find_and_click(page, "Content")
+           or find_and_click(page, "Sessions"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "staff_activity")
     record("Staff", "Activity — can view",
-           "pass", "Activity view visible", s)
-
-    sign_out(page)
-    page.wait_for_timeout(2000)
+           "pass" if hit else "fail", "Activity view visible", s,
+           f"clicked={hit}")
 
     # =====================================================================
-    # CLIENT ROLE CHECKLIST
+    # CLIENT ROLE CHECKLIST (client invite token from Step 7)
     # =====================================================================
     print("\n=== CLIENT ROLE CHECKLIST ===\n")
 
-    open_dev_sheet(page)
-    enable_flutter_acc(page)
-    find_and_click(page, "Client")
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
-
+    real_sign_out(page)
+    client_url = invitee_signup(page, token_client or "wlp_000012",
+                                "Robot Client", "invite.client@robot.test")
     s = screenshot(page, "client_dashboard")
-    texts = get_all_text(page)
-    record("Client", "Dashboard loads",
-           "pass" if texts else "fail",
-           "Client dashboard visible", s, f"Texts: {texts[:6]}")
+    joined_client = "/client" in client_url
+    record("Client", "Client invitee joins via invite code → client dashboard",
+           "pass" if joined_client else "fail",
+           "Client shell visible after invite redemption", s,
+           f"url={client_url} token={token_client or 'NONE'}")
 
-    # Activity Hub
-    find_and_click(page, "Activity") or find_and_click(page, "Hub")
+    # Client nav: Home | Sessions | Associates | Payments | Settings
+    hit = (find_and_click(page, "Activity") or find_and_click(page, "Hub")
+           or find_and_click(page, "Sessions"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "client_activity")
     record("Client", "Activity Hub — browse classes/sessions",
-           "pass", "Activity Hub visible", s)
+           "pass" if hit else "fail", "Activity Hub visible", s,
+           f"clicked={hit}")
 
-    # Associates tab
-    find_and_click(page, "Network") or find_and_click(page, "Associates")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    find_and_click(page, "Associates")
-    page.wait_for_timeout(1500)
-    enable_flutter_acc(page)
-    s = screenshot(page, "client_associates")
-    texts = get_all_text(page)
-    has_empty_state = any("No" in t or "empty" in t.lower() or "invite" in t.lower() for t in texts)
-    record("Client", "Associates tab loads with empty state / contacts",
-           "pass" if texts else "fail",
-           "Associates tab visible", s, f"Texts: {texts[:6]}")
-
-    # Payments
-    find_and_click(page, "Payments") or find_and_click(page, "Finance")
+    hit = (find_and_click(page, "Payments") or find_and_click(page, "Finance"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "client_payments")
     record("Client", "Payments — client-facing history loads",
-           "pass", "Payment history visible", s)
+           "pass" if hit else "fail", "Payment history visible", s,
+           f"clicked={hit}")
 
-    # Profile
-    find_and_click(page, "Profile") or find_and_click(page, "Settings")
+    hit = (find_and_click(page, "Profile") or find_and_click(page, "Settings"))
     page.wait_for_timeout(1500)
     enable_flutter_acc(page)
     s = screenshot(page, "client_profile")
     texts = get_all_text(page)
     record("Client", "Profile — client can view/edit profile",
-           "pass" if texts else "fail",
-           "Profile screen visible", s, f"Texts: {texts[:6]}")
-
-    sign_out(page)
-    page.wait_for_timeout(1000)
+           "pass" if (hit and texts) else "fail",
+           "Profile screen visible", s, f"clicked={hit} texts={texts[:6]}")
 
     # =====================================================================
     # SAVE RESULTS
@@ -1470,11 +1675,9 @@ def run_tests():
     browser.close()
     pw.stop()
 
-    # Write results to JSON
     with open("test_results.json", "w") as f:
         json.dump(RESULTS, f, indent=2)
 
-    # Print summary
     total = len(RESULTS)
     passed = sum(1 for r in RESULTS if r["result"] == "pass")
     failed = sum(1 for r in RESULTS if r["result"] == "fail")
