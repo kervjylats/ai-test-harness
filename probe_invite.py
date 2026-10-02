@@ -1,4 +1,4 @@
-"""Round 6 probe: invite flow — owner invites associate, invitee joins via
+﻿"""Round 6 probe: invite flow â€” owner invites associate, invitee joins via
 landing Code field, then propose-deal both sides. One browser session,
 NO page reloads (in-app sign-out only) so static mock stores survive."""
 import json
@@ -7,7 +7,8 @@ from playwright.sync_api import sync_playwright
 
 import master_test as mt
 
-BASE = "http://localhost:8080"
+from server_control import BASE, ensure_server, stop_server
+
 LOG = []
 
 
@@ -184,7 +185,7 @@ def run():
     codes = re.findall(r"wlp_[A-Za-z0-9]+", token) or ([token] if token else [])
     # Deterministic mock token: _idCounter starts at 10 and increments
     # BEFORE first use -> first Generate Link in a fresh isolate is
-    # always wlp_000011 (clipboard is unreliable headless — this is the
+    # always wlp_000011 (clipboard is unreliable headless â€” this is the
     # source of truth; clipboard stays as bonus verification).
     if not codes:
         codes = ["wlp_000011"]
@@ -201,7 +202,7 @@ def run():
 
     # ---- C: sign out -> signup invitee WITH code ----
     if not codes:
-        print("    !!! no invite code extracted — skipping invitee phases")
+        print("    !!! no invite code extracted â€” skipping invitee phases")
         browser.close()
         pw.stop()
         with open("probe_invite_out.json", "w") as f:
@@ -311,4 +312,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    if ensure_server():
+        try:
+            run()
+        finally:
+            stop_server()

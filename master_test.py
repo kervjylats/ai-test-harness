@@ -28,7 +28,11 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8',
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-BASE = "http://localhost:8080"
+# Round 7: shared on-demand static server. Port 9090 (was 8080 = LocalAI
+# hub's `big` slot port - serving there blocked seven hub models). The
+# server only lives for the duration of a run: ensure_server() before,
+# stop_server() after, so nothing lingers in the background.
+from server_control import BASE, ensure_server, stop_server
 ROLE_HASHES = ("/owner", "/partner", "/staff", "/client")
 
 RESULTS = []
@@ -1689,4 +1693,8 @@ def run_tests():
     return RESULTS
 
 if __name__ == "__main__":
-    run_tests()
+    if ensure_server():
+        try:
+            run_tests()
+        finally:
+            stop_server()

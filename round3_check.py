@@ -1,5 +1,5 @@
-"""
-round3_check.py — Round 3 vocabulary spot-check (Partner→Associate, Partnership→Collab).
+﻿"""
+round3_check.py â€” Round 3 vocabulary spot-check (Partnerâ†’Associate, Partnershipâ†’Collab).
 Signs in as an owner via the Dev Quick Sign-In sheet and asserts the new terminology
 renders across owner UI, with no legacy "Partner"/"Partnership"/"Partners" labels.
 """
@@ -9,7 +9,8 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-BASE = "http://localhost:8080"
+from server_control import BASE, ensure_server, stop_server
+
 RESULTS = []
 SHOT = Path("test_evidence")
 SHOT.mkdir(exist_ok=True)
@@ -20,7 +21,7 @@ def record(step, desc, ok, notes="", shot=""):
     RESULTS.append({"step": step, "description": desc,
                     "result": "pass" if ok else "fail",
                     "notes": notes, "screenshot": shot})
-    print(f"  [{'PASS' if ok else 'FAIL'}] {step}: {desc} — {notes}")
+    print(f"  [{'PASS' if ok else 'FAIL'}] {step}: {desc} â€” {notes}")
 
 def shot(page, name):
     p = SHOT / f"round3_{name}.png"
@@ -120,7 +121,7 @@ def main_flow(page, browser):
     enable_acc(page)
 
     t = texts(page)
-    record("R3.1", "Dev sheet role chips rename Partner→Associate",
+    record("R3.1", "Dev sheet role chips rename Partnerâ†’Associate",
            "Associate" in t and not legacy_matches(t),
            f"'Associate' chip present={('Associate' in t)}, legacy={legacy_matches(t)}",
            shot(page, "dev_sheet_chips"))
@@ -139,7 +140,7 @@ def main_flow(page, browser):
                f"Collab={any('Collab' in x for x in t)}, legacy={legacy_matches(t)}",
            shot(page, "owner_dashboard"))
 
-    # ---- Network → Associates tab ----
+    # ---- Network â†’ Associates tab ----
     find_click(page, "Network")
     enable_acc(page)
     find_click(page, "Associates")
@@ -153,7 +154,7 @@ def main_flow(page, browser):
            f"Associates tab={has_tab}, Partners={has_legacy}, Discover banner={has_discover}",
            shot(page, "network"))
 
-    # ---- Settings → Business Features ----
+    # ---- Settings â†’ Business Features ----
     find_click(page, "Settings")
     enable_acc(page)
     find_click(page, "Business Features")
@@ -201,4 +202,8 @@ def run():
     print(f"\n--- SUMMARY: {passed} pass / {failed} fail / {len(RESULTS)} total ---")
 
 if __name__ == "__main__":
-    run()
+    if ensure_server():
+        try:
+            run()
+        finally:
+            stop_server()

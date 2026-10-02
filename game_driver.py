@@ -20,7 +20,9 @@
 #   python game_driver.py --no-prologue   # skip the opening scene text
 #
 # Depends on master_test.py helpers (same repo); run against the RELEASE
-# web build served at http://localhost:8080.
+# web build served by server_control.py on http://localhost:9090 (Round 7:
+# was 8080, which is the LocalAI hub's `big` slot port). The server is
+# started on demand and stopped when this script exits - nothing lingers.
 
 import argparse
 import datetime
@@ -29,6 +31,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 import master_test as mt
+from server_control import BASE, ensure_server, stop_server
 
 PASSWORD = "demo123"
 
@@ -275,7 +278,7 @@ def run(args):
     failed = 1
     prologue_shown = not args.no_prologue
     try:
-        page.goto(mt.BASE, timeout=30000)
+        page.goto(BASE, timeout=30000)
         page.wait_for_timeout(6000)
         mt.enable_flutter_acc(page)
         # First load is slow (engine warm-up) — poll the front door like
@@ -635,4 +638,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if ensure_server():
+        try:
+            sys.exit(main())
+        finally:
+            stop_server()

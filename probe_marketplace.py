@@ -1,4 +1,4 @@
-"""Round 6 probe v3: two FRESH owners discover/link via the Marketplace,
+﻿"""Round 6 probe v3: two FRESH owners discover/link via the Marketplace,
 then run the mock money loop end-to-end (Round 6 payments).
 Session: own1 (Yoga) + own4 (Pilates), in-app sign-out only, no reloads.
 
@@ -22,38 +22,15 @@ from playwright.sync_api import sync_playwright
 
 import master_test as mt
 
-BASE = "http://localhost:8080"
+# Round 7: shared on-demand server (was a private copy hardcoded to 8080 -
+# the LocalAI hub's `big` slot port). Same start-if-needed semantics, new
+# port 9090, single source of truth in server_control.py.
+from server_control import BASE, PORT, ensure_server, stop_server
+
 LOG = []
 CONSOLE_LOG = []
 
-import socket
-import subprocess
-import sys
 import time
-
-WEB_DIR = r"C:\DEV\Projects\personal-wellness-trainer-main\build\web"
-
-
-def ensure_server():
-    s = socket.socket()
-    try:
-        s.connect(("127.0.0.1", 8080))
-        s.close()
-        return True
-    except OSError:
-        s.close()
-    subprocess.Popen(
-        [sys.executable, "-m", "http.server", "8080", "--directory", WEB_DIR],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2.5)
-    s = socket.socket()
-    try:
-        s.connect(("127.0.0.1", 8080))
-        s.close()
-        return True
-    except OSError:
-        s.close()
-        return False
 
 
 def enable(page):
@@ -168,7 +145,7 @@ def go_home(page, tries=3):
     """Land on the owner dashboard for sure.
 
     - Bottom-nav Home tab: works on shell screens (dashboard/marketplace/
-      notifications — marketplace has its own hash too).
+      notifications â€” marketplace has its own hash too).
     - hash '#/owner': no-op when already '#/owner', and it NEVER pops a
       pushed route (AgreementDetail doesn't even change the URL).
     - Back button: the only way out of pushed routes like AgreementDetail
@@ -193,9 +170,9 @@ def go_home(page, tries=3):
     if has(page, ["Agreements"]):
         return True
     # Last resort: a full reload resets the pushed-route stack (mock stores
-    # are static in-memory — they survive; session/prefs come from
+    # are static in-memory â€” they survive; session/prefs come from
     # localStorage). The dashboard always carries the 'Agreements' card.
-    page.goto("http://localhost:8080/#/owner")
+    page.goto(f"{BASE}/#/owner")
     page.wait_for_timeout(6000)
     enable(page)
     return has(page, ["Agreements"])
@@ -282,7 +259,7 @@ def type_into(page, aria, value, tries=4):
 
 
 def fill_by_label_prefix(page, prefix, value, tries=4):
-    """Fill an input whose aria-label STARTS with `prefix` — Flutter
+    """Fill an input whose aria-label STARTS with `prefix` â€” Flutter
     merges labelText+hint into one label ('Amount\\ne.g. 120.00'), so an
     exact aria-label selector would never match."""
     for _ in range(tries):
@@ -449,7 +426,7 @@ def go_marketplace(page):
 
 def run():
     if not ensure_server():
-        print("FATAL: could not start http server on :8080")
+        print(f"FATAL: could not start http server on :{PORT}")
         return
     pw = sync_playwright().start()
     last = None
@@ -577,7 +554,7 @@ def run_journey(browser):
     print(f"    >>> accepted+confirmed: {accepted}")
     print_console("post-confirm")
 
-    # F0: own4's dashboard — did the mutual agreement actually finalize?
+    # F0: own4's dashboard â€” did the mutual agreement actually finalize?
     page.evaluate("() => { window.location.hash = '#/owner'; }")
     page.wait_for_timeout(3000)
     enable(page)
@@ -585,7 +562,7 @@ def run_journey(browser):
     own4_active = has(page, ["1 Active"])
     print(f"    >>> own4 dashboard shows 1 Active: {own4_active}")
 
-    # F: own1 side after linking — where does the sender approve?
+    # F: own1 side after linking â€” where does the sender approve?
     assert real_sign_out(page), "sign-out before own1 relogin failed"
     login(page, "own1@robot.test")
     dump(page, "F_own1_dashboard")
@@ -593,7 +570,7 @@ def run_journey(browser):
     print(f"    >>> own1 dashboard shows 1 Pending: {own1_pending}")
 
     # F1: sender-side approval via the dashboard pending chip
-    # (non-empty counts open AgreementDetailScreen — the only Approve UI)
+    # (non-empty counts open AgreementDetailScreen â€” the only Approve UI)
     sender_detail = sender_approved = False
     if own1_pending:
         click_contains(page, "1 Pending", wait=4000)
@@ -640,8 +617,8 @@ def run_journey(browser):
     enable(page)
     dump(page, "F_network_after")
 
-    # ── G: money loop (Round 6 mock payments) ──────────────────────────────
-    # G1: own1's ACTIVE agreement detail — the Record payment entry point
+    # â”€â”€ G: money loop (Round 6 mock payments) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # G1: own1's ACTIVE agreement detail â€” the Record payment entry point
     home_ok = go_home(page)
     print(f"    >>> G0 go_home: {home_ok}")
     click_contains(page, "1 Active", wait=4000)
@@ -659,7 +636,7 @@ def run_journey(browser):
         enable(page)
         dump(page, "G2_payment_dialog")
         # TextField labels are INPUT aria-labels ('Amount\ne.g. 120.00'),
-        # NOT flt-semantics text — check inputs + visible button text.
+        # NOT flt-semantics text â€” check inputs + visible button text.
         labels = input_labels(page)
         dialog_ok = has(page, ["Confirm Payment", "Payment method"]) and \
             any(a.startswith("Amount") for a in labels)
@@ -668,21 +645,21 @@ def run_journey(browser):
             filled = fill_by_label_prefix(page, "Amount", "120")
             print(f"    >>> G2 amount filled: {filled}")
             # Snackbar fires only after the awaited record + two network
-            # delays (~1.5-3s) and lives ~4s — check at ~4.7s post-click.
+            # delays (~1.5-3s) and lives ~4s â€” check at ~4.7s post-click.
             mt.click_exact(page, "Confirm Payment", wait=1200)
             page.wait_for_timeout(3500)
             enable(page)
             paid = has(page, ["Payment recorded"])
             dump(page, "G2_after_confirm")
             print(f"    >>> G2 payment recorded snackbar: {paid}")
-        # Never strand the modal — it blocks navigation and sign-out.
+        # Never strand the modal â€” it blocks navigation and sign-out.
         if has(page, ["Confirm Payment"]):
             print("    >>> G2 dialog still open -> cancelling")
             mt.click_exact(page, "Cancel", wait=3000)
             page.wait_for_timeout(1000)
             enable(page)
 
-    # G3: own1's Revenue — payment txn + pending commission w/ Mark Paid
+    # G3: own1's Revenue â€” payment txn + pending commission w/ Mark Paid
     #     (split on own1's copy = owner 80 / partner 20 -> $24 owed)
     home_ok = go_home(page)  # from detail: hash fallback (no bottom nav)
     print(f"    >>> G3 go_home: {home_ok}")
@@ -706,7 +683,7 @@ def run_journey(browser):
         print(f"    >>> G4 Mark Paid: btn gone={payout_btn_gone}, "
               f"payout txn={own1_payout}")
 
-    # G5: own4's side — the payout lands in the PAYEE's own ledger
+    # G5: own4's side â€” the payout lands in the PAYEE's own ledger
     #     (owner-role payee visibility: merged user-keyed txns + commissions)
     assert go_home(page), "could not get home before sign-out"
     assert real_sign_out(page), "sign-out before own4 finance check failed"
@@ -723,8 +700,8 @@ def run_journey(browser):
     print(f"    >>> G5 own4 sees payout txn: {own4_payout} "
           f"(no Mark Paid btn: {own4_no_mark}, Deals: {own4_deal})")
 
-    # `paid` (snackbar sighting) is best-effort; revenue_ok — the actual
-    # payment txn + pending commission row — is the real proof.
+    # `paid` (snackbar sighting) is best-effort; revenue_ok â€” the actual
+    # payment txn + pending commission row â€” is the real proof.
     money_loop_ok = all([revenue_ok, payout_btn_gone,
                          own1_payout, own4_payout, own4_no_mark])
     print(f"    >>> MONEY LOOP OK: {money_loop_ok} (snackbar seen: {paid})")
@@ -737,4 +714,8 @@ def run_journey(browser):
 
 
 if __name__ == "__main__":
-    run()
+    if ensure_server():
+        try:
+            run()
+        finally:
+            stop_server()

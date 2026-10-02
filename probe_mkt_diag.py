@@ -1,10 +1,10 @@
-"""Diag: what does the marketplace DOM actually contain?"""
+﻿"""Diag: what does the marketplace DOM actually contain?"""
 import json
 from playwright.sync_api import sync_playwright
 
 import master_test as mt
 
-BASE = "http://localhost:8080"
+from server_control import BASE, ensure_server, stop_server
 
 
 def run():
@@ -63,4 +63,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    if ensure_server():
+        try:
+            run()
+        finally:
+            stop_server()

@@ -1,8 +1,9 @@
-"""Round 6 probe v3: landing signup -> onboarding walk -> sign-out -> relogin."""
+﻿"""Round 6 probe v3: landing signup -> onboarding walk -> sign-out -> relogin."""
 import json
 from playwright.sync_api import sync_playwright
 
-BASE = "http://localhost:8080"
+from server_control import BASE, ensure_server, stop_server
+
 LOG = []
 
 
@@ -158,7 +159,7 @@ def run():
         print(f"    hop {hop}: acted={acted}")
         dump(page, f"S3_hop{hop}")
         if blob_of() == before:
-            print("    >>> screen unchanged after action — stuck")
+            print("    >>> screen unchanged after action â€” stuck")
             break
 
     dump(page, "S4_final_state")
@@ -199,4 +200,8 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    if ensure_server():
+        try:
+            run()
+        finally:
+            stop_server()

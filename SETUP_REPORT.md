@@ -1861,7 +1861,7 @@ rebuilt; :8080 serves the new bundle.
    - The chat icon is NOT a separate semantics node; the owner-side member
      tile is one button whose tap pushes the chat room as a **URL-less route**
      (hash stays `#/owner`).
-   - Composer = `textarea[aria-label="Type a message…"]` (multiline: Enter
+   - Composer = `textarea[aria-label="Type a messageï¿½"]` (multiline: Enter
      inserts a newline, Send must be clicked).
    - The Send tooltip is **never** exposed as `flt-semantics[aria-label]`
      (`labels: []` even after semantics enable), and the composer's own
@@ -1904,3 +1904,32 @@ Suite Steps 8-9 fail honestly with full diagnosis notes in the results
 - Invite token order is deterministic (mock `_idCounter` starts at 10:
   first Generate Link press = `wlp_000011`); read order: page text ->
   clipboard -> predicted fallback.
+
+---
+
+## Round 7 â€” server port migration (8080 -> 9090, on-demand)
+
+**Why:** 8080 is the LocalAI hub's `big` slot port
+(`C:\LocalAI\hub_server.py`: `SLOT_PORTS = {"big": 8080, ...}`, auto-slots
+grow from 8083). Our static server there blocked seven of the hub's 15
+models from starting. The app itself needs no server at all - normal use
+is `flutter run -d windows` / `flutter run -d chrome`.
+
+**What changed:**
+
+- New `server_control.py` - single source of truth: `PORT=9090` (override
+  via env `PWT_WEB_PORT`), `BASE`, `ensure_server()` (start only if not
+  listening), `stop_server()` (kills only what's on our dedicated port),
+  CLI: `python server_control.py start|stop|status`.
+- All seven scattered `localhost:8080` literals now import from it
+  (`master_test.py`, `game_driver.py`, `probe_invite/marketplace/
+  mkt_diag/signup`, `round3_check.py`).
+- **On-demand lifecycle:** suite/game/probes call `ensure_server()` in
+  `__main__` before the run and `stop_server()` in `finally` after - no
+  background server lingers once a run ends.
+- `probe_marketplace.py` lost its private copy of the server helper.
+- App repo gained `serve.bat` (start/stop/status, port 9090) for the rare
+  manual case of opening `build\web` in a browser.
+
+**Port map (verified free at 9090):** hub 8080-8085+ (auto from 8083),
+hub itself 5000/5055, adhd-pill dev 4173, legacy scripts 8765.
