@@ -1933,3 +1933,61 @@ is `flutter run -d windows` / `flutter run -d chrome`.
 
 **Port map (verified free at 9090):** hub 8080-8085+ (auto from 8083),
 hub itself 5000/5055, adhd-pill dev 4173, legacy scripts 8765.
+
+### Verification (round 7)
+
+```
+Suite         : TOTAL 52 | PASS 50 | FAIL 2 | BLOCKED 0   (FAILs = Steps 8-9, known dead-end)
+probe_deeplink: 11 / 11 (exit 0)  ->  probe_deeplink_result.json
+analyze       : clean | unit tests: 176/176 | build web: OK
+server        : starts on demand, stops in finally - 8080/9090 unbound after runs
+```
+
+### Deep-link reality check (round 7, `probe_deeplink.py`)
+
+Unit tests only proved the invite URL string round-tripped. The browser
+disagreed on three layers, each fixed in the app and re-proven here:
+
+1. **Shape.** The app is hash-routed (no URL strategy set), but the
+   builder emitted path-style `/accept-invitation?token=...` links -
+   those 404 on a static server before the app can even load. Links are
+   now `/#/accept-invitation?token=` with the live origin (`inviteBaseUrl`
+   blank = `Uri.base.origin`).
+2. **Boot (the subtle one).** The Flutter engine resets
+   `defaultRouteName` to `/` the moment the framework starts reporting
+   navigation. With `?token=` in the hash that reset raced GoRouter's
+   construction and wiped the fragment first, so the router booted at
+   `/`, the redirect dropped the token, and a fresh visitor landed on the
+   front door. Fix: capture the platform route in `main()` before
+   `runApp` and pin GoRouter with `overridePlatformDefaultLocation`.
+   Plain deep links (`#/login` etc.) never showed it - only query-bearing
+   hashes did, which is exactly what invite links are.
+3. **Redirect.** `AuthInitial`/`AuthLoading` now whitelist
+   `/accept-invitation` (a public form must render while the session
+   restores) and the logged-out front-door bounce carries `?token=` to
+   `/get-started` so even a degraded arrival keeps the invite.
+
+**Probe result (11/11):** owner signs up, Network > Associates > Invite >
+Generate Link, the dialog displays a hash-style live-origin URL (read
+off the dialog, via clipboard), a fresh browser context opens it with no
+bounce/404 and shows the prefilled-code state, a live validation renders
+"Invite code recognised" + the invited heading, and the invitee finishes
+signup *without ever typing the code* and lands on their role dashboard
+(`#/client`, "Hello, Dee").
+
+**Honest boundary:** the mock invite store is an in-process static
+(`MockInviteSource._store`), so a minted token cannot exist in another
+page load - validation/redemption asserts therefore run against the
+seeded invite `wlp_000001`, which every fresh load ships. Phase 10
+Supabase will make minted links genuinely cross-browser.
+
+### Runbook (round 7)
+
+- Server:  `python server_control.py start|stop|status` (or `serve.bat`
+  in the app repo); suite/game/probes do it themselves - nothing to run
+  by hand.
+- Suite:   `python -u master_test.py`  -> `test_results.json`
+- Probe:   `python -u probe_deeplink.py` -> `probe_deeplink_result.json`
+- Game:    `python -u game_driver.py --auto --headless --no-prologue`
+- Detached launch (avoids the 120 s tool timeout):
+  `Start-Process python -ArgumentList '-u','master_test.py' -RedirectStandardOutput suite.log ...`
