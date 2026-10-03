@@ -16,3 +16,4 @@ probe_*_err.txt
 probe_*_out.json
 suite_pid.txt
 http_server_log.txt
+probe_*_result.json
