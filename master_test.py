@@ -460,6 +460,18 @@ def scroll_down(page, steps=4, dy=650):
     enable_flutter_acc(page)
 
 
+def scroll_up(page, steps=4, dy=650):
+    """Counterpart of scroll_down: reveal above-fold content (the Availability
+    card sits at the top of MarketplaceScreen, and rows scrolled out of the
+    viewport are dropped from the semantics tree entirely)."""
+    page.mouse.move(640, 400)
+    page.wait_for_timeout(300)
+    for _ in range(steps):
+        page.mouse.wheel(0, -dy)
+        page.wait_for_timeout(700)
+    enable_flutter_acc(page)
+
+
 def click_btn(page, label, wait=2500):
     """Click flt-semantics[role=button] whose text EXACTLY equals label."""
     matched = page.evaluate("""(label) => {
@@ -608,53 +620,108 @@ def input_labels(page):
         .map(i => i.getAttribute('aria-label') || '')""")
 
 
-def card_titles(page):
-    """Titles of the marketplace Availability card switches:
-    ['Discoverable', ...slot titles]."""
+# JS: switch node -> row label. Flutter's Switch has no built-in name, so
+# AvailabilityCard labels each control with Semantics(label: title); the
+# ancestor walk covers builds that predate it. Spliced into evaluate()
+# strings (no eval - the app's CSP may forbid it).
+_SWITCH_LABEL_JS = """(s => {
+    let label = (s.getAttribute('aria-label') || '').trim();
+    if (label) return label;
+    let n = s;
+    for (let d = 0; d < 6 && n; d++) {
+        n = n.parentElement;
+        if (!n || !n.getAttribute) continue;
+        const a = (n.getAttribute('aria-label') || '').trim();
+        if (a && !a.includes('My Availability')) return a.split('\\n')[0].trim();
+    }
+    return '';
+})"""
+
+
+def switch_map(page):
+    """[{label, checked, disabled}] for every switch, in DOM order.
+
+    Label-addressed on purpose: the Availability card has MORE rows than
+    switches (rows are lazily built) and now carries an extra same-job toggle,
+    so the old 'titles[i] -> switch[i]' pairing silently clicked a NEIGHBOUR
+    switch (Round 7 game turn 11)."""
     return page.evaluate("""() => {
-        for (const s of document.querySelectorAll('flt-semantics')) {
-            const a = s.getAttribute('aria-label') || '';
-            if (a.includes('My Availability')) {
-                const lines = a.split('\\n').map(x => x.trim()).filter(Boolean);
-                const titles = ['Discoverable'];
-                const i = lines.indexOf('Collab Slots');
-                if (i >= 0) {
-                    const rest = lines.slice(i + 1);
-                    for (let j = 0; j + 1 < rest.length + 1; j += 2) titles.push(rest[j]);
-                }
-                return titles;
-            }
-        }
-        return [];
-    }""")
+        const resolve = %s;
+        return Array.from(document.querySelectorAll(
+            'flt-semantics[role=switch]')).map(s => ({
+            label: resolve(s),
+            checked: s.getAttribute('aria-checked') || '',
+            disabled: s.getAttribute('aria-disabled') === 'true',
+        }));
+    }""" % _SWITCH_LABEL_JS)
+
+
+def switch_state(page, title):
+    """First switch whose label equals `title` or starts with it (handles the
+    ' (your trade)' suffix on an owner's own row). None when absent.
+    Pure read: rows are lazily built, so an off-screen row has NO switch node."""
+    for sw in switch_map(page):
+        if sw["label"] and (sw["label"] == title or
+                            sw["label"].startswith(title)):
+            return sw
+    return None
+
+
+def find_switch(page, title, sweeps=3):
+    """Locate a switch by label, scrolling until its row is on-screen."""
+    sw = switch_state(page, title)
+    if sw is not None:
+        return sw
+    if not switch_map(page):
+        enable_flutter_acc(page)
+        sw = switch_state(page, title)
+        if sw is not None:
+            return sw
+    for i in range(sweeps):
+        if i % 2 == 0:
+            scroll_up(page, steps=2)
+        else:
+            scroll_down(page, steps=2)
+        sw = switch_state(page, title)
+        if sw is not None:
+            return sw
+    return None
+
+
+def card_titles(page):
+    """Labels of the switches currently on the Availability card."""
+    return [sw["label"] for sw in switch_map(page) if sw["label"]]
 
 
 def switch_states(page):
-    return page.evaluate("""() => Array.from(
-        document.querySelectorAll('flt-semantics[role=switch]'))
-        .map(s => s.getAttribute('aria-checked') || '')""")
+    return [sw["checked"] for sw in switch_map(page)]
 
 
 def toggle_slot(page, title, wait=3000):
-    """Toggle the availability switch named `title` by card-title index.
-    Returns True if it flipped to 'true'."""
-    titles = card_titles(page)
-    if title not in titles:
-        print(f"    toggle {title!r}: NOT IN titles {titles}")
+    """Click the switch named `title`. Returns True when it reads 'true'
+    afterwards, False when it reads 'false', None when there is no such
+    switch or it is disabled (locked rows swallow clicks)."""
+    sw = find_switch(page, title)
+    if sw is None:
+        print(f"    toggle {title!r}: NOT FOUND "
+              f"{[x['label'] for x in switch_map(page)]}")
         return None
-    idx = titles.index(title)
-    before = switch_states(page)
+    if sw["disabled"]:
+        print(f"    toggle {title!r}: disabled/locked - click swallowed")
+        return None
+
+    before = sw["checked"]
+    idx = switch_map(page).index(sw)
     page.evaluate("""(i) => {
         const sw = document.querySelectorAll('flt-semantics[role=switch]');
         if (sw[i]) sw[i].click();
     }""", idx)
     page.wait_for_timeout(wait)
-    after = switch_states(page)
-    ok = idx < len(after) and after[idx] == "true" and (
-        idx >= len(before) or before[idx] != "true")
-    print(f"    toggle {title!r} idx={idx}: {before[idx] if idx < len(before) else '?'}"
-          f" -> {after[idx] if idx < len(after) else '?'} ({'OK' if ok else 'CHECK'})")
-    return ok
+    after = switch_state(page, title)
+    checked = after["checked"] if after else "?"
+    print(f"    toggle {title!r}: {before} -> {checked}"
+          f" ({'OK' if checked == 'true' else 'CHECK'})")
+    return checked == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -1244,7 +1311,9 @@ def run_tests():
     go_marketplace(page)
     toggle_slot(page, "Discoverable")
     toggle_slot(page, "Yoga Studio")
-    own4_ready = switch_states(page)[:2] == ["true", "true"]
+    own4_ready = all(
+        (switch_state(page, t) or {}).get("checked") == "true"
+        for t in ("Discoverable", "Yoga Studio"))
 
     # own1: Discoverable + open Pilates slot -> discovers own4
     real_sign_out(page)

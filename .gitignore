@@ -17,3 +17,7 @@ probe_*_out.json
 suite_pid.txt
 http_server_log.txt
 probe_*_result.json
+# Round 7: co-op game handshake + run artifacts
+coop_state.json
+coop_response.json
+coop_pid.txt

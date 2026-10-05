@@ -1991,3 +1991,107 @@ Supabase will make minted links genuinely cross-browser.
 - Game:    `python -u game_driver.py --auto --headless --no-prologue`
 - Detached launch (avoids the 120 s tool timeout):
   `Start-Process python -ArgumentList '-u','master_test.py' -RedirectStandardOutput suite.log ...`
+
+## Round 7 - marketplace discovery rules + the two-owner co-op game (2026-10-05)
+
+Two new app rules were implemented and then proven end to end by a brand-new
+harness driver that plays two owners in ONE browser page, taking strict
+alternating turns through a file handshake.
+
+### What changed (Flutter app)
+
+- **Mutual same-job opt-in (default OFF).** `MarketplaceListing.showToSameTitle`
+  (JSON + `copyWith` + schema column `show_to_same_title`), a
+  `Visible to owners with the same job` switch on the Availability card, and
+  a discovery rule: a viewer sees a listing in their own trade only when
+  BOTH sides have the switch on. New business defaults to off, configurable
+  via `ConfigMarketplace.sameTitleVisibilityDefault` /
+  `sameTitleVisibilityOwnerCanToggle` (owner toggle can be locked by config).
+  The owner's own trade is always listed but greyed with the reason until
+  they opt in.
+- **Active-agreement coverage (Rule 4, both directions).** `MarketplaceState`
+  derives `coveredCategories` from agreements where status is **active** and
+  the business is a party; covered jobs are hidden from discovery (including
+  the partner's own listing - they live in the partners list), and your own
+  slot for a covered job is locked with `Already in a Collab in this
+  category`. Pending/proposed agreements hide nothing. Same predicate runs in
+  the mock source and mirrored in the Supabase source (PHASE 10 note);
+  `sendRequest` rejects a slot the owner isn't advertising.
+- **Riverpod constraint worth remembering:** an AsyncNotifier that both
+  declares a provider in `dependencies:` AND `ref.watch`es it in `build()`
+  deadlocks (first value never emits), and omitting it from `dependencies`
+  trips the `element.dart:639` assert. The marketplace notifier therefore
+  reads agreements through a **repository** (`ref.read`, not watch) and is
+  refreshed explicitly by `ref.invalidate(marketplaceNotifierProvider)` after
+  accept / approve / decline / end.
+- **Accessibility:** every Availability `Switch` is wrapped in
+  `Semantics(label: title)`. Flutter's Switch has no name of its own, so
+  screen readers - and the harness - heard a bare "switch" for all of them.
+
+### What changed (harness)
+
+- **`game_coop.py` (new, 27 turns).** Avery is scripted; Sam's turns pause on
+  `coop_state.json` and resume when you drop `coop_response.json`
+  (`--auto` answers itself, `--headless` runs invisible). Covers: two real
+  signups, six cross-over invites (3 roles each direction), a chat proposal
+  and acceptance, both marketplaces opened, an Associate Request (chip must be
+  picked before `Send`, else the button stays disabled), accept with the
+  commission dialog, approval, a $120 payment and the commission payout on
+  the other ledger. Turns 19-25 no longer fake a reverse leg: Rule 4 makes it
+  impossible by design, so turn 19 asserts her own trade slot is *locked* by
+  the active collab (Rule 2) and turn 20 asserts Sam's results hide every
+  yoga peer - then 5 turns skip with that reason. Untracked run artifacts
+  (`coop_state.json`, `coop_response.json`, `coop_pid.txt`) gitignored.
+- **Label-addressed switches (`master_test.py`).** New `switch_map` /
+  `switch_state` / `find_switch` / `scroll_up` + rewritten `toggle_slot` and
+  `card_titles`. The old helpers resolved `card_titles[i] ->
+  flt-semantics[role=switch][i]`, which silently clicks a *neighbour* switch
+  as soon as the card gains a row (the new same-job toggle did exactly that)
+  and breaks again when off-screen rows drop out of the semantics tree.
+  Switches are now matched by their own name, scrolling to bring them into
+  view. `ensure_slot` in `game_coop.py` wraps it as an idempotent setter -
+  `toggle_slot` is a FLIP, and flipping Discoverable off wipes every slot.
+- **`probe_switches.py` (new).** Dumps every switch's label/checked/disabled
+  state and exercises the exact sequence: Discoverable -> slot -> own trade
+  refused while same-job is off -> same-job on -> own trade opens.
+
+### Verification (round 7, 2026-10-05)
+
+- **Co-op game: 22/22 judged turns PASS, 0 FAIL, 5 documented SKIP**
+  (`coop_run2.log`, recap `game_recap_20261005_100420.md`): turns 1-20 and
+  26-27 green, including the four turns that exercise the new rules.
+- `probe_switches.py`: all five expectations met (Discoverable OK, slot OK,
+  own trade refused while same-job off, same-job OK, own trade opens after).
+- App: `flutter analyze` clean, `flutter test` **198/198** (22 new tests:
+  covered-jobs + same-job groups in `marketplace_notifier_test.dart`, plus
+  `test/unit/marketplace_listing_test.dart` and `test/unit/marketplace_config_test.dart`),
+  `flutter build web` OK.
+
+### Incidents (round 7)
+
+1. **Turn 11 clicked the wrong switch.** Positional pairing
+   (`titles[i] -> switch[i]`) put the new same-job toggle at index 1, so
+   "Pilates Studio" (index 2) landed on the locked own-trade row and the tap
+   did nothing (`false -> false (CHECK)`). Fixed by label addressing, and at
+   the source by naming the switches.
+2. **Turn 19 was a wrong expectation, not a bug.** Avery could not open her
+   own Yoga slot because her *active* collab already covers yoga - Rule 2
+   greys it. The same sequence succeeds on a business with no agreements
+   (proved by the probe). Assertion now expects the lock plus its reason.
+3. **Turn 8 invite flake (first run only).** Riley's activation bounced to
+   `#/get-started` once; passed unchanged on both re-runs. No code change.
+4. **A run looks like a hang but isn't.** A full 27-turn game takes ~29 min,
+   and `Start-Process` children outlive the tool call that launched them -
+   a timeout on the launch command does not mean the run died. Poll the log;
+   never block on the process.
+
+### Runbook (round 7, marketplace)
+
+- Co-op game (unattended): `python -u game_coop.py --auto --headless` ->
+  `coop_run.log` + `game_recap_*.md`.
+  Interactive: `python -u game_coop.py` and answer `coop_response.json`.
+- Switch probe: `python -u probe_switches.py`.
+- Detached launch + poll:
+  `Start-Process python -ArgumentList '-u','game_coop.py','--auto','--headless' -RedirectStandardOutput coop_run2.log ... -WindowStyle Hidden`
+  then poll the log every few minutes (do not touch port 9090 meanwhile -
+  the mock stores are in-process and shared with any other client).
