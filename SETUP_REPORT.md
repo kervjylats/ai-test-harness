@@ -2055,8 +2055,15 @@ alternating turns through a file handshake.
   state and exercises the exact sequence: Discoverable -> slot -> own trade
   refused while same-job is off -> same-job on -> own trade opens.
 
-### Verification (round 7, 2026-10-05)
+### Verification (round 7, 2026-10-05/06)
 
+- **Suite: TOTAL 52 | PASS 50 | FAIL 2 | BLOCKED 0** (re-run 2026-10-05 after
+  the shared switch helpers were rewritten; FAILs are still only the known
+  Steps 8-9 dead-end). `test_results.json` carries 52 entries / 50 pass.
+- **`game_driver.py`: 18/18 PASS** (re-run 2026-10-06 with `--auto --headless
+  --no-prologue`; scenes 4-5 go through the rewritten `toggle_slot`, so this
+  is the regression gate for the helper change). Recap
+  `game_recap_20261006_091056.md`.
 - **Co-op game: 22/22 judged turns PASS, 0 FAIL, 5 documented SKIP**
   (`coop_run2.log`, recap `game_recap_20261005_100420.md`): turns 1-20 and
   26-27 green, including the four turns that exercise the new rules.
@@ -2084,6 +2091,26 @@ alternating turns through a file handshake.
    and `Start-Process` children outlive the tool call that launched them -
    a timeout on the launch command does not mean the run died. Poll the log;
    never block on the process.
+5. **Suite Steps 12-17 cascaded to FAIL - a login race in the harness, not
+   an app bug (2026-10-05).** The run scored 44/52 with 6 *new* marketplace
+   failures. `test_screenshots/step12_received.png` showed the marketing
+   front door (`/get-started`), not own4's marketplace: `real_sign_out`
+   returned as soon as the URL lost its role shell while the app was still
+   navigating to the front door, so `typed_login`'s `#/login` write was
+   clobbered and the credentials went into the SIGNUP form (same
+   `Email`/`Password` aria-labels, no exact `Sign In` click to hit) - a
+   silent no-op, after which Step 12 asserted against an unauthenticated
+   page and dragged 13-17 down with it. Fixed in `master_test.py`:
+   `real_sign_out` settles on the front door before returning, `typed_login`
+   verifies the login form rendered (retry x3, told apart from the front
+   door by the signup-only `Your Name` field) and returns whether it
+   submitted, and `login` verifies a role shell was reached (retry x3).
+   Re-run: 50/52, only Steps 8-9 fail. `probe_step12.py` is the replay
+   harness that isolated it.
+6. **`game_driver.py` died mid-scene once (2026-10-05).** Browser crash -
+   `Page.wait_for_timeout: Connection closed while reading from the driver`
+   right after Scene 4's signup. Not an assertion failure; a clean re-run
+   scored 18/18.
 
 ### Runbook (round 7, marketplace)
 

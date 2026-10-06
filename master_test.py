@@ -733,10 +733,34 @@ def on_role_shell(page):
 
 
 def typed_login(page, email, password="test123"):
-    """Fill the real Email/Password inputs on #/login and submit."""
-    page.evaluate("""() => { window.location.hash = '#/login'; }""")
-    page.wait_for_timeout(8000)
-    enable_flutter_acc(page)
+    """Fill the real Email/Password inputs on #/login and submit.
+
+    Returns True when the login form was found and submitted.
+
+    The '#/login' hash write is retried: real_sign_out returns as soon as
+    the URL loses its role shell, but the app can still be navigating to
+    the front door, and that in-flight navigation clobbers a '#/login'
+    written too early. The credentials then land in the SIGNUP form on
+    /get-started - it exposes inputs with the SAME aria-labels (Email,
+    Password) and the exact 'Sign In' click matches nothing there - so the
+    login silently no-ops. Round 7's suite hit exactly this at Step 12 and
+    checked an unauthenticated front door, cascading Steps 12-17 to FAIL.
+    The login form is told apart from the front door by the signup-only
+    'Your Name' field."""
+    found = False
+    for attempt in range(3):
+        page.evaluate("""() => { window.location.hash = '#/login'; }""")
+        page.wait_for_timeout(8000)
+        enable_flutter_acc(page)
+        labels = input_labels(page)
+        if "Email" in labels and "Your Name" not in labels:
+            found = True
+            break
+        print(f"    login nav attempt {attempt}: no login form at "
+              f"{page.url} labels={labels}")
+    if not found:
+        print(f"    login {email}: login form never rendered - not submitting")
+        return False
     page.fill(f'input[aria-label="Email"]', email)
     page.wait_for_timeout(400)
     page.fill(f'input[aria-label="Password"]', password)
@@ -749,13 +773,25 @@ def typed_login(page, email, password="test123"):
     }""")
     page.wait_for_timeout(8000)
     enable_flutter_acc(page)
+    return True
 
 
 def login(page, email, password="test123"):
-    """Typed credential login + settle on the role dashboard."""
-    typed_login(page, email, password)
-    page.wait_for_timeout(3000)
-    enable_flutter_acc(page)
+    """Typed credential login + settle on the role dashboard.
+
+    Verifies the landing actually changed to a role shell; a no-op login
+    (front-door race above) would otherwise let later steps assert against
+    an unauthenticated page and cascade. Returns True on success."""
+    for attempt in range(3):
+        submitted = typed_login(page, email, password)
+        page.wait_for_timeout(3000)
+        enable_flutter_acc(page)
+        if on_role_shell(page):
+            return True
+        print(f"    login {email} attempt {attempt}: submitted={submitted} "
+              f"not on a role shell ({page.url}), retrying")
+    print(f"    login {email}: FAILED after 3 attempts ({page.url})")
+    return False
 
 
 def real_sign_out(page):
@@ -765,7 +801,13 @@ def real_sign_out(page):
     ones via hash) so the shell's Settings tab is reachable.
     Returns True when no role shell hash remains in the URL."""
     if not on_role_shell(page):
-        return True  # already at the front door / login
+        # Already signed out (front door / login form / mid-transition).
+        # Settle only when neither destination has rendered yet, so the
+        # caller's '#/login' write cannot be clobbered by a pending
+        # navigation - same race as the sign-out path below.
+        if "Email" not in input_labels(page) and not has(page, ["Get started"]):
+            wait_for_texts(page, ["Get started"], timeout_ms=10000)
+        return True
     for attempt in range(3):
         page.keyboard.press("Escape")  # close any open dialog first
         page.wait_for_timeout(800)
@@ -787,6 +829,14 @@ def real_sign_out(page):
         page.wait_for_timeout(3000)
         enable_flutter_acc(page)
         if not on_role_shell(page):
+            # The URL has already lost its role shell, but the app can
+            # still be animating to the front door - a caller that
+            # immediately writes '#/login' gets that write clobbered by
+            # this pending navigation (the Round 7 suite's Step 12 landed
+            # on /get-started and typed into the SIGNUP form). Settle on
+            # the front door before handing control back.
+            if not has(page, ["Get started"]):
+                wait_for_texts(page, ["Get started"], timeout_ms=10000)
             return True
         print(f"    sign-out attempt {attempt} still on {page.url}")
     return False
