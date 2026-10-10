@@ -2122,3 +2122,39 @@ alternating turns through a file handshake.
   `Start-Process python -ArgumentList '-u','game_coop.py','--auto','--headless' -RedirectStandardOutput coop_run2.log ... -WindowStyle Hidden`
   then poll the log every few minutes (do not touch port 9090 meanwhile -
   the mock stores are in-process and shared with any other client).
+
+### Verification (round 8, 2026-10-10)
+
+- **Suite: TOTAL 52 | PASS 52 | FAIL 0 — first fully-green run.**
+  Progression this round: 50/52 (Phase A backend-switch gate — the two
+  FAILs were the old Steps 8-9 dead-end expectations) → 51/52 (app
+  invite-category fix made Step 8 pass) → 52/52 (pill a11y fix + Step 9
+  rewrite to the real partner UX: My Deal card → Pending pill → detail →
+  Approve → Active).
+- App: `flutter analyze` clean, `flutter test` **200/200** (+2
+  invite-category regression tests in
+  `test/modules/team/invite_category_flow_test.dart`), `flutter build
+  web` OK (mock), live branch compiles with
+  `--dart-define=USE_MOCK_DATA=false`.
+- Known limitation (recorded, non-blocking): the Step 8 notes marker
+  (`rig-deal-8`) never lands — focus-click + typing on the multiline
+  Notes field still doesn't reach Flutter's controller — so Step 9
+  correlates via `category=strength_coach` instead
+  (`correlate_via=category` in `test_results.json`).
+
+### Incidents (round 8)
+
+7. **The My Deal pills could not be clicked (harness + app).** The
+   "1 Pending" pill is an InkWell around plain Text with no
+   `Semantics(button)`; Flutter merged its text into the parent card's
+   aggregate node (one 1248px-wide semantics entry), so exact/prefix
+   lookups found nothing and `el.click()` on non-interactive nodes is a
+   no-op. Fixed app-side (`_tappableCount` now wraps in
+   `Semantics(button: true, container: true)` — also a genuine a11y win)
+   and harness-side (`click_center` coordinate-click fallback that
+   prefers the smallest visible exact > startsWith > contains match).
+8. **`fill_by_label_prefix` silently no-ops on unfocused multiline
+   fields.** The Notes TextField's DOM shim only exists after focus, so
+   the value-setter approach returns false/does nothing. Focus-then-type
+   was added for Notes but still doesn't stick; the Amount single-line
+   case (auto-focused dialog) keeps working.

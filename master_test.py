@@ -11,8 +11,10 @@ Round 6 rework (dev tools removed for good):
   Settings -> Sign Out path; navigation is tab/hash based.
 - Invite flows use real one-time tokens (page text / clipboard / predicted
   mock counter: first Generate Link in a fresh isolate = wlp_000011).
-- Steps 8/9 (invite -> propose deal) record the KNOWN dead-end honestly
-  (FAIL, do-not-fix) instead of being blocked by missing credentials.
+- Steps 8/9 (invite -> propose deal) now drive the FIXED Round 8 flow:
+  the invite link carries the inviter's category, so the associate is
+  selectable with a real trade, the proposal is delivered, and the
+  associate approves it from the 'My Deal' dashboard card.
 - Marketplace + money loop are driven across two real owner accounts
   (own1@robot.test, own4@robot.test) plus an invite-linked associate.
 """
@@ -448,6 +450,46 @@ def click_contains(page, needle, wait=2500):
     }""", needle)
     page.wait_for_timeout(wait)
     return matched
+
+
+def click_center(page, label, wait=2200):
+    """Real Playwright coordinate click at the CENTER of the most specific
+    flt-semantics node matching label (exact > startsWith > contains).
+
+    Needed for non-interactive wrappers like the dashboard 'My Deal' pills:
+    the tap target is an InkWell around a plain Text (no `role`), so
+    click_prefix/click_exact's el.click() on a non-interactive semantics node
+    is a no-op — and Flutter may MERGE the pill into a parent semantics node
+    (e.g. one node reading '0 Active 1 Pending'), so an exact/startsWith
+    lookup finds nothing. Falls back to the SMALLEST visible contains-match
+    (the leaf-most node, capped to avoid the page-aggregate node) and clicks
+    its real bounding-box center. Returns True if a node was clicked."""
+    box = page.evaluate("""(label) => {
+        const candidates = [];
+        for (const s of document.querySelectorAll('flt-semantics')) {
+            const t = (s.textContent || '').trim();
+            const al = (s.getAttribute('aria-label') || '').trim();
+            const r = s.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0 || r.width > 400) continue;
+            let rank = -1;
+            if (t === label || al === label) rank = 0;
+            else if (t.startsWith(label) || al.startsWith(label)) rank = 1;
+            else if (t.includes(label) || al.includes(label)) rank = 2;
+            if (rank >= 0) {
+                candidates.push({ x: r.x + r.width / 2, y: r.y + r.height / 2,
+                                  area: r.width * r.height, rank: rank });
+            }
+        }
+        if (!candidates.length) return null;
+        candidates.sort((a, b) => (a.rank - b.rank) || (a.area - b.area));
+        return candidates[0];
+    }""", label)
+    if not box:
+        return False
+    page.mouse.click(box["x"], box["y"])
+    page.wait_for_timeout(wait)
+    enable_flutter_acc(page)
+    return True
 
 
 def scroll_down(page, steps=4, dy=650):
@@ -1277,11 +1319,11 @@ def run_tests():
     real_sign_out(page)
 
     # ---- Step 8: own3 proposes a deal to the linked associate ----
-    # KNOWN dead-end (Round 6 do-not-fix): the invite-linked associate has
-    # no category, so `_propose()` early-returns on a null
-    # partnerCategoryId (propose_agreement_screen.dart:237) — 'Send
-    # Proposal' is a silent no-op and the propose screen never pops.
-    # Record the real outcome honestly (expected FAIL), then pop the screen.
+    # Round 8 fix: the Network invite now stamps the inviter's category
+    # onto the link, so the invite-linked associate arrives with a real
+    # trade (own3 = strength_coach) and the propose flow completes.
+    # (Previously: associate had no category -> partnerCategoryId null ->
+    # 'Send Proposal' was a silent no-op.)
     login(page, "own3@robot.test")
     find_and_click(page, "Network")
     page.wait_for_timeout(1500)
@@ -1295,60 +1337,123 @@ def run_tests():
     banner = has(page, ["Propose a deal"])
     if banner:
         click_prefix(page, "Propose a deal")
+        page.wait_for_timeout(1500)
+        enable_flutter_acc(page)
         s8b = screenshot(page, "step08_propose_screen")
         propose_ui = has(page, ["Propose Agreement"]) and has(page, ["Select associate"])
         if propose_ui:
             click_exact(page, "Select associate")
+            page.wait_for_timeout(800)
+            enable_flutter_acc(page)
             click_btn_prefix(page, "Robot Associate", wait=2000) or \
                 click_prefix(page, "Robot Associate")
-            picked = has(page, ["Robot Associate (no category)"])
+            page.wait_for_timeout(800)
+            enable_flutter_acc(page)
+            picked = has(page, ["Robot Associate (strength_coach)"])
+            no_category = has(page, ["(no category)"])
+            # Notes field: focus it with a real coordinate click, then TYPE
+            # (Flutter's DOM text shim only exists once the field is focused;
+            # the value-setter approach silently no-ops otherwise).
+            notes_ok = False
+            if click_center(page, "Notes", wait=800) or click_prefix(page, "Notes"):
+                page.keyboard.type("rig-deal-8", delay=20)
+                page.wait_for_timeout(400)
+                notes_ok = page.evaluate("""() => {
+                    for (const i of document.querySelectorAll('textarea, input')) {
+                        const al = i.getAttribute('aria-label') || '';
+                        if (al.startsWith('Notes')) return i.value === 'rig-deal-8';
+                    }
+                    return false;
+                }""")
             click_exact(page, "Send Proposal")
             propose_closed = until_absent(page, ["Propose Agreement", "Send Proposal"],
                                           8000)
             step8_sent = propose_closed and has(page, ["Discover new associates"])
-            rec8 = "pass" if (picked and step8_sent) else "fail"
+            rec8 = "pass" if (picked and step8_sent and not no_category) else "fail"
             s8c = screenshot(page, "step08_after_send")
-            note8 = (f"picked={picked} screen_popped={propose_closed}. "
-                     "KNOWN invite→propose dead-end: invite-linked associate has "
-                     "no category → partnerCategoryId null → _propose() returns "
-                     "silently (propose_agreement_screen.dart:237); no agreement "
-                     "is created.")
-            if not step8_sent:
-                click_exact(page, "Back", wait=3000)   # pop the stuck screen
-                page.wait_for_timeout(1500)
-                enable_flutter_acc(page)
+            note8 = (f"picked={picked} no_category={no_category} "
+                     f"notes_ok={notes_ok} screen_popped={propose_closed}. "
+                     "Round 8: invite link carries the inviter's category, "
+                     "so the associate is selectable with a real trade and "
+                     "the proposal is delivered (notes marker rig-deal-8).")
         else:
             s8c = s8b
             note8 = "Propose screen controls (Select associate / Send Proposal) not exposed."
     else:
         note8 = "No 'Propose a deal' banner on the Associates list."
     record("Step 8", "Owner proposes a deal to the linked Associate",
-           rec8, "Propose screen closes (proposal delivered)", s8c, note8)
+           rec8, "Associate selectable with category; proposal delivered", s8c, note8)
 
-    # ---- Step 9: receiver-side accept/decline ----
+    # ---- Step 9: receiver-side approve via the partner dashboard ----
+    # The partner's Home dashboard has a 'My Deal' card; its Pending pill
+    # opens AgreementDetailScreen (the only screen with Approve/Decline).
+    # Correlate via the Step 8 notes marker before approving.
     rec9, note9 = "fail", ""
     if step8_sent:
         real_sign_out(page)
         login(page, "assoc@robot.test")
-        seen = False
-        for route_lbl in ["Network", "Agreements", "Home"]:
-            find_and_click(page, route_lbl, timeout=5000)
+        page.wait_for_timeout(2500)
+        enable_flutter_acc(page)
+        deal_card = has(page, ["My Deal"])
+        if not deal_card:
+            scroll_down(page, steps=2, dy=500)
+            page.wait_for_timeout(1000)
+            enable_flutter_acc(page)
+            deal_card = has(page, ["My Deal"])
+        opened = False
+        note_markers = False
+        pending_dbg = ""
+        if deal_card and has(page, ["1 Pending"]):
+            # Round 8 app fix: the pill is now exposed as a semantics
+            # button, so click_exact works; click_center stays as the
+            # coordinate fallback if the semantics merge ever regresses.
+            opened = click_exact(page, "1 Pending") or click_center(page, "1 Pending")
+            page.wait_for_timeout(800)
+            enable_flutter_acc(page)
+            # Correlate: this detail must be the Step 8 deal (its note).
+            note_markers = has(page, ["rig-deal-8"])
+        if not opened:
+            # Self-diagnosis: which semantics nodes mention Pending at all?
+            pending_dbg = page.evaluate("""() => {
+                const out = [];
+                for (const s of document.querySelectorAll('flt-semantics')) {
+                    const t = ((s.textContent||'') + ' | ' + (s.getAttribute('aria-label')||'')).trim();
+                    if (/pending/i.test(t)) {
+                        const r = s.getBoundingClientRect();
+                        out.push(`[${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}] ${t.slice(0,80)}`);
+                    }
+                }
+                return out.slice(0, 6).join(' ;; ');
+            }""")
+        s9a = screenshot(page, "step09_detail")
+        approvable = has(page, ["Approve"]) and has(page, ["Decline"])
+        # Primary correlation = the Step 8 notes marker. Fallback = the
+        # detail shows the Step 8 category (strength_coach) — assoc's
+        # business holds only this one agreement at this point anyway.
+        correlated = note_markers or has(page, ["strength_coach"])
+        correlate_via = "notes" if note_markers else (
+            "category" if has(page, ["strength_coach"]) else "none")
+        approved = False
+        if opened and correlated and approvable:
+            approved = click_exact(page, "Approve")
             page.wait_for_timeout(2000)
             enable_flutter_acc(page)
-            if has_text(page, ["Accept", "Decline", "Proposal"]):
-                seen = True
-                break
-        acc = click_exact(page, "Accept") if seen else False
-        s9c = screenshot(page, "step09_receiver")
-        rec9 = "pass" if (seen and acc) else "fail"
-        note9 = f"proposal markers seen={seen} accept_clicked={acc}"
+            detail_gone = until_absent(page, ["Approve", "Decline"], 8000)
+            active_now = has(page, ["1 Active"])
+            approved = bool(approved) and detail_gone and active_now
+        s9c = screenshot(page, "step09_after_approve")
+        rec9 = "pass" if approved else "fail"
+        note9 = (f"deal_card={deal_card} opened={opened} note_markers={note_markers} "
+                 f"correlate_via={correlate_via} approvable={approvable} "
+                 f"detail_closed={locals().get('detail_gone', False)} "
+                 f"active_pill={locals().get('active_now', False)} approved={approved}"
+                 + (f" pending_nodes={pending_dbg}" if pending_dbg else ""))
         real_sign_out(page)
     else:
         s9c = screenshot(page, "step09_cascade")
-        note9 = ("Cascade: Step 8 did not deliver a proposal (known invite→propose "
-                 "dead-end), so the receiver has nothing to accept.")
+        note9 = "Cascade: Step 8 did not deliver a proposal."
     record("Step 9", "Associate receives and can accept/decline the proposal",
-           rec9, "Proposal visible to Associate with Accept/Decline", s9c, note9)
+           rec9, "Detail opens with Approve/Decline; approve flips to Active", s9c, note9)
 
     # =====================================================================
     # Steps 10-13: Partnership Marketplace path (own1 <-> own4)
