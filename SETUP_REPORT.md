@@ -2158,3 +2158,109 @@ alternating turns through a file handshake.
    the value-setter approach returns false/does nothing. Focus-then-type
    was added for Notes but still doesn't stick; the Amount single-line
    case (auto-focused dialog) keeps working.
+
+## Round 9 - Schema-vs-Sources Hardening: C1 Cross-Tenant RPCs, C2 Majors, C3 Minors (2026-10-11)
+
+A full audit of the Supabase schema vs the Dart sources found 8 major +
+12 minor defects (plus the already-known cross-tenant hole). All 3
+phases are now fixed and green. Real SQL remains compile-verified only
+(no live DB yet - everything ships behind the mock switch).
+
+### Phase C1 - cross-tenant writes via SECURITY DEFINER RPCs (app commit `1a7e01c`)
+
+9. **Any authenticated user could write ANY business's data.** Three
+   RLS `WITH CHECK` gaps let a row pass the write but reference a
+   business the writer doesn't belong to: `launch_business` (any user
+   could mint a business for another user_id), `agreements` (either
+   party could name an unrelated business_id), `transactions` (the
+   buyer-side business_id was client-asserted). Fixed by moving the
+   writes into SECURITY DEFINER RPCs in `triggers.sql` (sections 12-14)
+   that derive every stamped column server-side from the caller's own
+   profile row; `seed.sql` gained activation keys so the flows remain
+   reachable in mock.
+
+### Phase C2 - 8 majors (app commit `16d97ac`, 24 files)
+
+- **M5 notify via RPC:** `notify_user()` (triggers.sql section 16)
+  validates the relationship server-side (same business OR shared
+  active agreement) and stamps the recipient's business; callers:
+  propose, approve, mutual-agree, purchase, invite-join.
+- **M6/M7 schema-vs-source drift:** conversations CHECK allows
+  `community` + `createGroupConversation(type:)`; `category_id` added
+  to the profiles update grant and actually written by
+  `setOnboardingComplete` / read with `selected_category` fallback.
+- **M8 RLS write-wider-than-read:** finance writes return `void` (no
+  INSERT..RETURNING).
+- **M9 double-award / owner-only rejection:** loyalty awards live
+  inside `purchase_from_partner()` and `handle_new_user()` (client
+  invite branch), with `DataConfig.useMockData`-branched Dart parity.
+- **M10/M11/M12:** member deactivation recovery via owner-gated RPCs +
+  profiles SELECT self-exception + inactive-member sign-in rejection;
+  `inviteMember` creates a real invite link + pending member row;
+  dead/expired invite links rejected in all three SQL paths.
+
+### Phase C3 - 12 minors
+
+1. **UTC-normalized writes (whole class).** Every Supabase write sent
+   offset-less local ISO strings into `timestamp with time zone`
+   columns; Postgres read them as UTC, shifting every stored instant by
+   the device's UTC offset. All 18 write sites (10 supabase sources +
+   `marketplace_listing.toJson`) now emit `.toUtc().toIso8601String()`.
+2. **Display formatters read UTC components.** `AppFormatters.date/
+   time` and the notifications `_formatTime` fallback now `.toLocal()`
+   first (no-op for mock).
+3. **Reservations unordered** - `.order('start_time', ascending: true)`
+   added (3 sites), matching mock.
+4-7. **Nullable FK downcasts** (`agreement_id`, `sender_id`,
+   `created_by_user_id`, `assigned_by_user_id`,
+   `uploaded_by_user_id` in 6 models) - `as String? ?? ''`.
+8. **`photo_url` column added** to profiles (+ update grant +
+   `_fromProfileRow` mapping) - the model/screen always supported it.
+9. **Challenge "already done today" gate** compares in UTC, matching
+   SQL `current_date`; mock stamps UTC too (both modes one clock).
+10. **Profile-settings edits were never persisted** (#10 was the worst
+    minor). New `AuthRepository.updateProfileFields` writes the granted
+    profiles columns real-mode (email also via GoTrue `updateUser`) and
+    re-persists under the original login key in mock; the notifier is
+    now `Future<bool>` with revert-on-failure and the screen awaits it.
+    The mock owner roster row syncs display names (same pattern as
+    `setPlanTier`).
+11. **Mock messaging store is static** - chat_notifier,
+    message_notifier and chat_launcher each built their own instance,
+    so messages were invisible across providers (same fix as
+    MockFinanceSource).
+12. **Delivery fees unordered** - `.order('min_distance_km')` added so
+    `calculateFee`'s first-match semantics charge the same zone as mock.
+
+### Verification (round 9, 2026-10-11)
+
+- App: `flutter analyze` clean, `flutter test` **200/200**, `flutter
+  build web` OK (mock rebuilt after live-branch compile check with
+  `--dart-define=USE_MOCK_DATA=false`).
+- **Suite: TOTAL 52 | PASS 52 | FAIL 0** (one browser-level
+  `TargetClosedError` crash mid-run 1 - see incident 10; clean re-run).
+- **Game: 18/18 PASS** (`game_recap_20261011_221606.md`).
+- `auth_notifier_test.dart` now mocks SharedPreferences (the new
+  persistence path needs it, same pattern as the other auth suites).
+
+### Incidents (round 9)
+
+9. **Riverpod dependency assertion vs `ref.invalidate`.** Notifiers
+   declaring `dependencies: [authNotifierProvider]` cannot invalidate
+   other notifiers - the assertion fails and the silent catch swallows
+   everything after it (null returns). The M5 "refresh the bell" calls
+   were removed; `sendNotificationQuietly` writes the row and the bell
+   reads fresh.
+10. **Playwright `TargetClosedError` at Step 14 (run 1).** Browser
+    target died mid-run - infra, not an assertion; identical re-run
+    passed 52/52 at the same step. Same class as incident 6.
+
+### Runbook (round 9)
+
+- App gates: `flutter analyze` -> `flutter test` -> live compile ->
+  **rebuild mock web** -> (server on :9090 serves build/web from disk).
+- Suite: `Start-Process python -ArgumentList '-u','master_test.py'
+  -RedirectStandardOutput suite.log ... -WindowStyle Hidden` + poll
+  every ~2 min; never touch port 9090 during a run.
+- Game: `python -u game_driver.py --auto --headless --no-prologue` ->
+  `game_recap_*.md` (recap table + `pass 18 / fail 0`).
