@@ -13,6 +13,7 @@
 #   casey   marketplace  Casey Pilates Co     fresh signup, collab via marketplace
 #   dana    staff        joined via avery's staff invite
 #   erin    client       joined via blake's client invite (invites both ways)
+#   frank   client       joined via blake's client invite (homework arc)
 #
 # Usage:
 #   python game_driver.py                 # headed, interactive gates
@@ -44,6 +45,7 @@ MARKET = dict(role="marketplace", name="Casey", email="casey@demo.test",
 ASSOC = dict(role="associate", name="Blake", email="blake@demo.test")
 STAFF = dict(role="staff", name="Dana", email="dana@demo.test")
 CLIENT = dict(role="client", name="Erin", email="erin@demo.test")
+FRANK = dict(role="client", name="Frank Client", email="frank@demo.test")
 
 PROPOSAL = ("Propose: you take every Saturday client, 70/30 split in "
             "your favour on what you bring, one review each month. "
@@ -225,6 +227,22 @@ def open_dm(page, member, owner_side=False):
         if wait_composer(page, 5000):
             return True
     return False
+
+
+def open_homework_coach(page):
+    """Owner dashboard -> Content hub -> Homework coach view. Returns True
+    when the coach view is confirmed by screen text (FAB probe). Same
+    race-safe pattern as the suite E2E: find_and_click returns on match,
+    not on navigation, so every hop is verified before driving the next."""
+    mt.go_home(page)
+    mt.find_and_click(page, "Content")
+    mt.wait_for_texts(page, ["Tools"], timeout_ms=8000)
+    mt.enable_flutter_acc(page)
+    mt.find_and_click(page, "Homework")
+    mt.wait_for_texts(page, ["Assign Homework", "No homework"],
+                      timeout_ms=8000)
+    mt.enable_flutter_acc(page)
+    return mt.has(page, ["Assign Homework", "No homework"])
 
 
 def write_recap(mode, prologue_shown):
@@ -598,6 +616,203 @@ def run(args):
         s = shot(page, "09b_erin_client_shell")
         scene(page, "Erin joins via invite code -> client shell",
               "/client" in joined, f"url={joined}", s)
+
+        # ---------------------------------------------------------------
+        # SCENE 10 — Blake invites Frank (second client, homework arc)
+        # ---------------------------------------------------------------
+        banner("SCENE 10 — Blake invites Frank (client for the homework arc)")
+        mt.real_sign_out(page)
+        mt.login(page, ASSOC["email"], PASSWORD)
+        mt.find_and_click(page, "Network", timeout=6000)
+        page.wait_for_timeout(1500)
+        mt.enable_flutter_acc(page)
+        inv = mt.find_and_click(page, "Invite")   # 'Invite a client' FAB
+        token_frank = (mt.generate_invite_token(page, "wlp_000014")
+                       if inv else "")
+        s = shot(page, "10_frank_invite")
+        scene(page, "Blake-generated client invite link for Frank",
+              token_frank.startswith("wlp_"),
+              f"token={token_frank or 'NONE'}", s)
+        mt.real_sign_out(page)
+        joined = mt.invitee_signup(page, token_frank, FRANK["name"],
+                                   FRANK["email"], password=PASSWORD)
+        s = shot(page, "10b_frank_client_shell")
+        scene(page, "Frank joins via invite code -> client shell",
+              "/client" in joined, f"url={joined}", s)
+
+        # ---------------------------------------------------------------
+        # SCENE 11 — Avery assigns homework to Frank
+        # ---------------------------------------------------------------
+        banner("SCENE 11 — Avery assigns homework to Frank")
+        mt.real_sign_out(page)
+        mt.login(page, OWNER["email"], PASSWORD)
+        coach_ok = open_homework_coach(page)
+        fab = mt.find_and_click(page, "Assign Homework") if coach_ok else False
+        mt.wait_for_texts(page, ["Title"], timeout_ms=6000)
+        mt.enable_flutter_acc(page)
+        opened_dd = mt.find_and_click(page, "Client") if fab else False
+        page.wait_for_timeout(1000)
+        picked = (mt.find_and_click(page, "Frank Client")
+                  if opened_dd else False)
+        page.wait_for_timeout(1000)
+        filled = (mt.fill_by_label_prefix(page, "Title", "Game week flow")
+                  if picked else False)
+        submitted = mt.click_btn(page, "Assign") if filled else False
+        mt.wait_for_texts(page, ["Game week flow"], timeout_ms=8000)
+        mt.enable_flutter_acc(page)
+        s = shot(page, "11_homework_listed")
+        listed = mt.has_all(page, ["Game week flow", "Frank Client"])
+        scene(page, "Avery assigns homework to Frank -> listed",
+              bool(fab and opened_dd and picked and filled and submitted
+                   and listed),
+              f"fab={fab} dd={opened_dd} picked={picked} filled={filled} "
+              f"submitted={submitted} listed={listed}", s)
+
+        # ---------------------------------------------------------------
+        # GATE C — you play Frank: mark the homework done
+        # ---------------------------------------------------------------
+        mt.real_sign_out(page)
+        mt.login(page, FRANK["email"], PASSWORD)
+        page.wait_for_timeout(2000)
+        mt.enable_flutter_acc(page)
+        decision_c = gate(
+            page, "C", FRANK,
+            "Avery assigned 'Game week flow' to Frank Client.\n"
+            "You are now signed in as FRANK (client dashboard, Homework "
+            "tile visible).\n"
+            "Your move as Frank: open the Homework tile, press Mark Done "
+            "on the item, then type `done` here:",
+            ["done"], default="done", screenshot="gateC_frank_dashboard")
+        if _STATE["auto"]:
+            # Unattended: the robot plays Frank's tap itself.
+            mt.find_and_click(page, "Homework")
+            mt.wait_for_texts(page, ["Game week flow", "No homework yet"],
+                              timeout_ms=8000)
+            mt.enable_flutter_acc(page)
+            md = mt.find_and_click(page, "Mark Done")
+            page.wait_for_timeout(2500)
+            mt.enable_flutter_acc(page)
+            print(f"    frank auto mark-done: clicked={md}", flush=True)
+        else:
+            print("    (human played Frank in the browser)", flush=True)
+        mt.wait_for_texts(page, ["Done"], timeout_ms=8000)
+        mt.enable_flutter_acc(page)
+        s = shot(page, "11b_frank_done")
+        done_ok = mt.has_all(page, ["Game week flow", "Done"])
+        scene(page, "Frank marks the homework Done (client view)",
+              done_ok, f"decision={decision_c} done={done_ok}", s)
+
+        # ---------------------------------------------------------------
+        # SCENE 12 — Avery verifies Done on the coach view, then deletes
+        # ---------------------------------------------------------------
+        banner("SCENE 12 — Avery verifies Done, then deletes the item")
+        mt.real_sign_out(page)
+        mt.login(page, OWNER["email"], PASSWORD)
+        coach_ok = open_homework_coach(page)
+        s = shot(page, "12_coach_done")
+        verified = (mt.has_all(page, ["Game week flow", "Frank Client",
+                                      "Done"]) if coach_ok else False)
+        scene(page, "Coach view shows Frank's item as Done",
+              bool(verified), f"verified={verified}", s)
+        deleted = confirmed = gone = False
+        if verified:
+            deleted = mt.find_and_click(page, "Delete homework")
+            page.wait_for_timeout(1200)
+            mt.enable_flutter_acc(page)
+            confirmed = mt.click_btn(page, "Delete")
+            gone = mt.until_absent(page, ["Game week flow"],
+                                   timeout_ms=8000)
+        s = shot(page, "12b_homework_deleted")
+        scene(page, "Avery deletes the item -> gone",
+              bool(deleted and confirmed and gone),
+              f"deleted={deleted} confirmed={confirmed} gone={gone}", s)
+
+        # ---------------------------------------------------------------
+        # SCENE 13 — break it on purpose (edge cases, all automated)
+        # ---------------------------------------------------------------
+        banner("SCENE 13 — break it on purpose (edge cases)")
+        # 13a: empty assign submit must be a silent no-op.
+        fab = mt.find_and_click(page, "Assign Homework")
+        mt.wait_for_texts(page, ["Title"], timeout_ms=6000)
+        mt.enable_flutter_acc(page)
+        empty_submit = mt.click_btn(page, "Assign") if fab else False
+        page.wait_for_timeout(1500)
+        mt.enable_flutter_acc(page)
+        labels = mt.input_labels(page)
+        still_open = any(a.startswith("Title") for a in labels)
+        # A successful empty submit would mint an untitled card WITH a
+        # delete button; its absence is the precise no-op proof (the
+        # backdrop empty-state text can't be asserted while the modal
+        # scrim covers the list).
+        no_phantom = not mt.has(page, ["Delete homework"])
+        s = shot(page, "13a_empty_assign_noop")
+        scene(page, "Empty assign submit is a silent no-op (dialog stays, "
+              "nothing created)",
+              bool(empty_submit and still_open and no_phantom),
+              f"submit={empty_submit} still_open={still_open} "
+              f"no_phantom={no_phantom}", s)
+        # 13b: Cancel closes the dialog cleanly.
+        cancelled = mt.click_btn(page, "Cancel") if still_open else False
+        page.wait_for_timeout(1500)
+        mt.enable_flutter_acc(page)
+        labels = mt.input_labels(page)
+        closed = not any(a.startswith("Title") for a in labels)
+        empty_after = mt.has(page, ["No homework assigned yet."])
+        scene(page, "Cancel closes the assign dialog cleanly",
+              bool(cancelled and closed and empty_after),
+              f"cancelled={cancelled} closed={closed} "
+              f"empty_state={empty_after}", s)
+        # 13c: empty payment amount shows validation, creates nothing.
+        # go_home's contract is loose ("Agreements" visible — the hub
+        # satisfies it too), so confirm the DASHBOARD explicitly before
+        # looking for the "1 Active" chip.
+        mt.go_home(page)
+        if not mt.has(page, ["Revenue Summary"]):
+            mt.find_and_click(page, "Home", timeout=6000)
+            page.wait_for_timeout(2500)
+            mt.enable_flutter_acc(page)
+        mt.click_contains(page, "1 Active", wait=4000)
+        page.wait_for_timeout(2500)
+        mt.enable_flutter_acc(page)
+        detail = mt.has_after_scroll(page, ["Record payment",
+                                            "End Agreement"])
+        dialog = False
+        if detail:
+            mt.click_exact(page, "Record payment", wait=6000)
+            page.wait_for_timeout(2500)
+            mt.enable_flutter_acc(page)
+            dialog = mt.has(page, ["Confirm Payment"])
+        err = False
+        if dialog:
+            # Amount is autofocused and empty: Confirm must refuse.
+            mt.click_exact(page, "Confirm Payment", wait=1500)
+            page.wait_for_timeout(1500)
+            mt.enable_flutter_acc(page)
+            err = (mt.has(page, ["Enter an amount greater than 0"])
+                   and mt.has(page, ["Confirm Payment"]))
+            s = shot(page, "13c_payment_validation")
+            mt.click_exact(page, "Cancel", wait=3000)
+            page.wait_for_timeout(1200)
+            mt.enable_flutter_acc(page)
+        if not dialog:
+            s = shot(page, "13c_no_detail")
+        scene(page, "Empty payment amount shows validation, dialog stays",
+              bool(detail and dialog and err),
+              f"detail={detail} dialog={dialog} validation={err}", s)
+        # 13d: a consumed invite token fails gracefully (LAST: strands the
+        # session on the landing page, but the recap writes regardless).
+        # invitee_signup assumes a signed-OUT browser — without the sign
+        # out, the authed session bounces straight back to #/owner.
+        mt.real_sign_out(page)
+        ghost = mt.invitee_signup(page, token_assoc, "Ghost",
+                                  "ghost@demo.test", password=PASSWORD)
+        txt = mt.page_text(page)
+        reuse_ok = ("invalid" in txt
+                    and not any(h in ghost for h in mt.ROLE_HASHES))
+        s = shot(page, "13d_reused_token")
+        scene(page, "Reused invite token fails gracefully (no shell, error "
+              "shown)",
+              reuse_ok, f"url={ghost} invalid_text={'invalid' in txt}", s)
 
         failed = 0
     except Exception as exc:

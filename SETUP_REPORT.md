@@ -2379,3 +2379,58 @@ invisible engagement-chip buttons), all fixed this round.
 - Probe pattern for walkthrough work: `probe_walkthrough*.py` against
   the live server (fresh page = fresh in-process mock stores; signup a
   throwaway owner) - much faster than a 25-min suite cycle.
+
+## Round 11 (2026-10-14) - Aggressive game: homework lifecycle + edge cases
+
+### App (2 fixes; TESTING_ISSUES_LOG #12, #13)
+
+- **#12 client-homework route:** `_ClientHomeworkView` (Mark Done) existed
+  but was unreachable - the only homework route was `owner-homework` and
+  the client dashboard Homework tile pointed at `clientNotifications`
+  (zero homework surfacing). Added `client-homework` route rendering
+  `HomeworkListScreen` (already role-branches to the client view) and
+  retargeted the tile. Friend-referral card untouched.
+- **#13 one-time invites:** dialog-minted links were unlimited-use
+  (`createLink(maxUses = 0)` default, no call site overrode it), so a
+  consumed token joined a second account with no error. `maxUses: 1` at
+  both per-invite call sites (shared `InviteDialog`, slot-conflict
+  redirect); referral card stays reusable by design. Notifier-level, so
+  mock + Supabase both covered.
+
+### Rig - GAME 18 -> 28 (+10 checks, +GATE C)
+
+- Scene 10: Blake invites Frank (2nd client, wlp_000014). Scene 11:
+  Avery assigns "Game week flow" -> listed under Frank Client.
+- **GATE C (you play Frank):** script signs in as Frank, human opens the
+  Homework tile + presses Mark Done in the browser, types `done`; `--auto`
+  drives the tap robotically. Scene 12: coach view shows Done -> delete.
+- Scene 13 "break it on purpose" (all automated): empty assign no-op
+  (no phantom card), Cancel closes, empty payment amount shows
+  "Enter an amount greater than 0", consumed token rejected on
+  `#/get-started` with the invalid text.
+- Harness lessons: `go_home`'s contract is loose ("Agreements" visible -
+  the hub satisfies it) - Scene 13c confirms the dashboard explicitly
+  (`Revenue Summary`) before hunting "1 Active"; `invitee_signup` assumes
+  a signed-out browser (added the missing sign-out); backdrop text under
+  a modal scrim can't be asserted - prove no-ops by absence of the
+  created artifact instead.
+
+### Verification (round 11, 2026-10-14)
+
+- App: `flutter analyze` clean, `flutter test` **203/203**, mock
+  `build/web` rebuilt after every app edit (verified fresh by timestamp).
+- Game: **28/28** (`game_recap_20261014_154817.md`) - two validation runs
+  (25/28, then 28/28 after scene-bug fixes; all 3 interim failures were
+  test bugs, plus the real #13 app bug).
+- Suite: not rerun - the only behavior change (invite single-use) affects
+  token *reuse*, which the suite never does (every token used exactly
+  once); all invite paths re-proven by the 28/28 game (4 fresh joins +
+  1 reuse rejection).
+
+### Runbook (round 11)
+
+- Interactive (the creator pass): `python -u game_driver.py` - headed
+  browser + prologue, gates wait for your keyboard. ~15-20 min.
+- Auto gate: `python -u game_driver.py --auto --headless --no-prologue`.
+- Game owns its server via server_control (starts/stops :9090) - do not
+  run the suite at the same time (shared port + shared mock stores).
