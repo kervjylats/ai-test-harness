@@ -2264,3 +2264,118 @@ phases are now fixed and green. Real SQL remains compile-verified only
   every ~2 min; never touch port 9090 during a run.
 - Game: `python -u game_driver.py --auto --headless --no-prologue` ->
   `game_recap_*.md` (recap table + `pass 18 / fail 0`).
+
+---
+
+## Round 10 (2026-10-12) - Phase D: module walkthrough + homework stub
+
+Plan Phase D had two halves: replace the `_CoachHomeworkView` stub with a
+real coach management screen, and add a per-job module walkthrough to the
+rig. The walkthrough's first runs did what a walkthrough should - they
+surfaced three real app bugs (dead-end module screens, raw-id labels,
+invisible engagement-chip buttons), all fixed this round.
+
+### Phase D - coach homework view
+
+- `HomeworkRepository.getHomeworkForBusiness(businessId)` (interface +
+  mock + Supabase; the table's SELECT RLS is already
+  business-membership scoped) + `businessHomeworkNotifierProvider`
+  (auth-gated AsyncNotifier with `delete`).
+- `_CoachHomeworkView` replaces `Center(Text('Homework management coming
+  soon.'))`: every assignment in the business grouped under client-name
+  headers, per-row delete behind a confirm dialog, empty state. The
+  screen-side `ref.invalidate` does cross-provider refresh after
+  assign/delete - `HomeworkNotifier` declares
+  `dependencies: [authNotifierProvider]` and cannot invalidate outside
+  that set (the round-9 incident 9 constraint).
+- Assign dialog: client picker is now ownership-scoped - Owners see the
+  whole business roster, Partners only clients with
+  `primaryPartnerId == self` (mirrors NetworkScreen). Closes known
+  issue 1 in TESTING_ISSUES_LOG.
+- New `test/modules/homework/homework_business_source_test.dart`
+  (3 tests: business read is a superset of the per-client read,
+  assign/delete round-trip, cross-business scoping).
+
+### Phase D - app bugs the walkthrough exposed (all fixed)
+
+9. **Module screens were dead ends.** All 8 module screens (scheduling,
+   catalog, inventory, media, gps, delivery_fees, reservations, reviews)
+   set `automaticallyImplyLeading: false`; pushed from the hub they had
+   no back arrow, no bottom nav, and an unchanged URL - no escape except
+   a browser reload. Override removed in all 8: the back arrow shows
+   when pushed (canPop), implies nothing when the screen is a shell tab
+   body.
+10. **Raw module ids leaked into labels.** `ConfigTerminology.labelFor()`
+    has no case for module ids and `default:` returns the key itself, so
+    AppBars/empty states rendered `scheduling`, `reviews`, `No slots in
+    scheduling`. New `moduleLabel(moduleId, fallback:)` helper; 6 call
+    sites updated. `catalog`/`media` resolve through real terminology
+    cases (yoga: Catalog -> "Shop", Media -> "Content"; strength: Media
+    -> "Programs") and were left alone - which is also why the rig's
+    probes must be job-agnostic.
+11. **Engagement chips exposed no button semantics.** The hub's five
+    chips (Community/Challenges/Homework/Rewards/Reviews) are bare
+    `GestureDetector`s; Flutter merged their tap action and label into
+    the hub's aggregate node - invisible to assistive tech, and the
+    rig's `el.click()` had nothing bound to fire while coordinate clicks
+    landed on the bottom nav under the chips' rects. Fixed with
+    `Semantics(button: true, container: true)` on
+    `_CompactEngagementChip` (the round-8 dashboard-pill pattern).
+    Logged as issues 9-11 in TESTING_ISSUES_LOG.md.
+
+### Rig - PER-JOB MODULE WALKTHROUGH (+20 checks, 52 -> 72)
+
+- Per job (Yoga/Pilates/Strength): hub loads with Tools; each of the 4
+  visible Tools tiles opens its screen; the Homework chip opens the
+  coach view (stub text asserted absent). Then an own3 end-to-end:
+  assign homework to invite.client -> row appears under the client
+  header -> delete with confirm -> row gone.
+- Harness lessons baked in (comments at each use site):
+  - pushed module routes never change the URL (AgreementDetail class) -
+    assert screen text, not `page.url`;
+  - hub-tile semantics merge into one wide node that `click_center`'s
+    400px cap skips (Round 8 pill class) - use `find_and_click`;
+  - `find_and_click` returns on MATCH, not on navigation - wait for the
+    screen's probe via `wait_for_texts` (screenshots proved renders
+    land >1s late);
+  - probes are lowercase substrings because screen titles follow job
+    terminology;
+  - `find_and_click` Method 1 now prefers interactive-role exact matches
+    and dispatches `el.click()` (semantics tap action - immune to
+    occlusion), falling back to coordinate clicks only inside the
+    y <= 780 safe band; blind coordinate clicks at chips' rects hit the
+    bottom nav (Home tab -> dashboard);
+  - the delete confirm uses `click_btn`'s EXACT text match (`Delete`)
+    because the list's `Delete homework` IconButton prefix-matches.
+- `probe_walkthrough*.py` (base + 2-10): the diagnostic trail (tile-click mechanics,
+  semantics-node dumps, state-after-every-click, timing samples, final
+  green validation, then the 70/72 E2E diagnosis).
+
+### Verification (round 10, 2026-10-12)
+
+- App: `flutter analyze` clean, `flutter test` **203/203** (+3 homework
+  source tests), live-branch compile OK, mock `build/web` rebuilt after
+  every app edit.
+- Suite: TOTAL 72 - **72 PASS / 0 FAIL** (final run 2026-10-14).
+- Game: **18/18** (run 2026-10-14, `game_recap_20261014_111243.md`).
+- Harness fix (2026-10-14): `fill_by_label_prefix` returned True on a
+  synthetic setter + 'input' event that Flutter never consumed on an
+  unfocused field - the homework Title stayed empty, Assign no-ops
+  silently (homework_list_screen.dart:95), and both E2E checks failed
+  in runs 1-2 (70/72). Rewritten to click-to-focus + trusted keystrokes
+  + verify-before-return; probe10 (owner -> associate -> client invite
+  chain, then real submit) proved strategy B lists the item where A does
+  not. The E2E also verifies each navigation hop by screen text (a
+  missed hop cascaded run 1's E2E onto the Reviews screen) and skips
+  the delete drive when assign fails.
+- `probe_walkthrough8-10.py`: the 70/72 diagnosis trail (state dumps
+  per action, fill-strategy bake-off, full E2E replication).
+
+### Runbook (round 10)
+
+- Same as round 9; the walkthrough adds ~6 min (suite ~20-25 min total).
+- A doomed run may be killed mid-flight: results only write at the end
+  and the :9090 server is independent of the suite process.
+- Probe pattern for walkthrough work: `probe_walkthrough*.py` against
+  the live server (fresh page = fresh in-process mock stores; signup a
+  throwaway owner) - much faster than a 25-min suite cycle.

@@ -122,20 +122,45 @@ def find_and_click(page, label, timeout=3000):
             return True
 
         # Method 1: Direct textContent match (works for buttons with visible text)
+        # - Interactive-role nodes: el.click() fires the bound semantics tap
+        #   action — no hit-testing, so it works below the fold and under
+        #   overlays. Coordinate-clicking these instead misfires: the
+        #   engagement chips' rects (y 756-836) sit BENEATH the bottom nav,
+        #   so their center lands on a nav tab (observed: Home tab ->
+        #   dashboard, Content tab -> no-op). Prefer the role=button twin
+        #   over the role-less duplicate Flutter renders alongside it.
+        # - Plain text nodes: coordinate click, but only inside the safe
+        #   band (y <= 780) — below that the nav intercepts, so fall
+        #   through to the scroll step and retry (same guard as lab_match).
         match = page.evaluate("""(label) => {
+            const INTERACTIVE = ['button','link','menuitem','checkbox','switch'];
             const sems = document.querySelectorAll('flt-semantics');
+            let bestI = null, bestP = null;
             for (const s of sems) {
-                if (s.textContent === label) {
-                    const r = s.getBoundingClientRect();
-                    if (r.width > 0 && r.height > 0) {
-                        return {x: r.x + r.width/2, y: r.y + r.height/2};
-                    }
+                if (s.textContent !== label) continue;
+                const r = s.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) continue;
+                const area = r.width * r.height;
+                const role = s.getAttribute('role');
+                if (INTERACTIVE.includes(role)) {
+                    if (!bestI || area < bestI.area) bestI = {n: s, area: area};
+                } else if (!bestP || area < bestP.area) {
+                    bestP = {x: r.x + r.width/2, y: r.y + r.height/2,
+                             area: area};
                 }
+            }
+            if (bestI) {
+                bestI.n.click();
+                return {clicked: true};
+            }
+            if (bestP && bestP.y <= 780) {
+                return {clicked: false, x: bestP.x, y: bestP.y};
             }
             return null;
         }""", label)
         if match:
-            page.mouse.click(match["x"], match["y"])
+            if not match.get("clicked"):
+                page.mouse.click(match["x"], match["y"])
             page.wait_for_timeout(1500)
             return True
 
@@ -631,27 +656,37 @@ def type_into(page, aria, value, tries=4):
 def fill_by_label_prefix(page, prefix, value, tries=4):
     """Fill an input whose aria-label STARTS with `prefix` — Flutter
     merges labelText+hint into one label ('Amount\\ne.g. 120.00'), so an
-    exact aria-label selector would never match."""
+    exact aria-label selector would never match.
+
+    Round 10: click-to-focus FIRST, then real keystrokes. The old
+    synthetic setter + 'input' event set the DOM value but Flutter never
+    consumed it into the TextEditingController on an UNFOCUSED field
+    (probe10: fill returned True yet Assign silently no-op'd and the
+    field screenshotted empty). Focusing attaches Flutter's editing
+    session, trusted key events land in the controller, and the value
+    survives rebuilds. Returns True only when the DOM value verifies —
+    no more false positives."""
     for _ in range(tries):
-        ok = page.evaluate("""({prefix, value}) => {
-            for (const i of document.querySelectorAll('input, textarea')) {
-                const al = (i.getAttribute('aria-label') || '');
-                if (!al.startsWith(prefix)) continue;
-                const r = i.getBoundingClientRect();
-                if (!(r.width > 0 && r.height > 0)) continue;
-                const proto = i.tagName === 'TEXTAREA'
-                    ? window.HTMLTextAreaElement.prototype
-                    : window.HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                setter.call(i, value);
-                i.dispatchEvent(new Event('input', {bubbles: true}));
-                return true;
-            }
-            return false;
-        }""", {"prefix": prefix, "value": value})
-        if ok:
-            page.wait_for_timeout(300)
-            return True
+        try:
+            idx = page.evaluate("""(prefix) => Array.from(
+                document.querySelectorAll('input, textarea'))
+                .findIndex(i => {
+                    const al = i.getAttribute('aria-label') || '';
+                    const r = i.getBoundingClientRect();
+                    return al.startsWith(prefix) && r.width > 0
+                        && r.height > 0; })""", prefix)
+            if idx is None or idx < 0:
+                continue
+            el = page.locator("input, textarea").nth(idx)
+            el.click()
+            page.wait_for_timeout(400)
+            page.keyboard.press("Control+A")
+            page.keyboard.type(value, delay=15)
+            page.wait_for_timeout(400)
+            if el.input_value() == value:
+                return True
+        except Exception:
+            pass
         page.wait_for_timeout(500)
     return False
 
@@ -1896,6 +1931,164 @@ def run_tests():
     record("Client", "Profile — client can view/edit profile",
            "pass" if (hit and texts) else "fail",
            "Profile screen visible", s, f"clicked={hit} texts={texts[:6]}")
+
+    # =====================================================================
+    # PER-JOB MODULE WALKTHROUGH (Phase D) — every owner job's Activity
+    # hub tiles open their module screens, and the Homework coach view is
+    # the real management screen (the old "coming soon" stub is gone).
+    # =====================================================================
+    print("\n=== PER-JOB MODULE WALKTHROUGH ===\n")
+
+    # Owner-visible Tools tiles + a substring probe each screen must show.
+    # The permissions engine gates modules on modules_master +
+    # platform_identity (per-job maps in job_types.json are terminology
+    # only in this build), so scheduling/catalog/media/reviews are the
+    # visible set for all three suite jobs; Reservations/Inventory/GPS/
+    # Delivery Fees stay hidden for owners. NOTE: pushed module routes do
+    # NOT change the URL (like AgreementDetail), so assertions are on
+    # screen text, not page.url. Probes are LOWERCASE SUBSTRINGS matched
+    # against body+semantics: screen titles follow job terminology
+    # (yoga: Catalog -> 'Shop', Media -> 'Content'; strength: Media ->
+    # 'Programs'), so exact-title probes break per job.
+    owner_tools = [("Schedule", "add slot"), ("Catalog", "is empty"),
+                   ("Media", "items yet"), ("Reviews", "no reviews yet")]
+
+    walkthrough_accounts = [
+        ("own1@robot.test", "Yoga Studio"),
+        ("own4@robot.test", "Pilates Studio"),
+        ("own3@robot.test", "Strength Coach"),
+    ]
+    for acct, job in walkthrough_accounts:
+        job_slug = job.split()[0].lower()
+        real_sign_out(page)
+        if not login(page, acct):
+            record("Modules", f"{job}: sign-in for walkthrough", "fail",
+                   f"{acct} lands on the owner shell", "",
+                   f"url={page.url}")
+            continue
+        go_home(page)
+        hub_clicked = find_and_click(page, "Content")
+        hub_texts = wait_for_texts(page, ["Tools"], timeout_ms=8000)
+        enable_flutter_acc(page)
+        s = screenshot(page, f"mod_{job_slug}_hub")
+        tools_ok = has(page, ["Tools"])
+        record("Modules", f"{job}: Activity hub loads with Tools section",
+               "pass" if (hub_clicked and tools_ok) else "fail",
+               "Hub 'Tools' header visible", s,
+               f"clicked={hub_clicked} tools={tools_ok}")
+
+        for tile, probe in owner_tools:
+            # find_and_click, NOT click_center: the hub tile's semantics
+            # merge into one wide node ('Schedule Manage availability'),
+            # which click_center's 400px cap skips — same merged-node class
+            # as the Round 8 pill bug. find_and_click's aria-label prefix
+            # match + el.click() returns True on MATCH, not on navigation —
+            # the push can render >1s later (screenshots showed stale
+            # screens), so wait for the screen's own probe before judging.
+            opened = find_and_click(page, tile)
+            texts = wait_for_texts(page, [probe], timeout_ms=8000)
+            enable_flutter_acc(page)
+            s = screenshot(page, f"mod_{job_slug}_{tile.lower().replace(' ', '_')}")
+            body = " ".join(t.lower() for t in texts)
+            ok = (opened and probe in body
+                  and "could not load" not in body and "try again" not in body)
+            record("Modules", f"{job}: {tile} module screen loads",
+                   "pass" if ok else "fail",
+                   f"{tile} screen renders (probe {probe!r})", s,
+                   f"opened={opened} url={page.url}")
+            go_home(page)
+            find_and_click(page, "Content")
+            wait_for_texts(page, ["Tools"], timeout_ms=8000)
+            enable_flutter_acc(page)
+
+        # Homework chip (Engagement row) → coach management view.
+        hw_open = find_and_click(page, "Homework")
+        hw_texts = wait_for_texts(
+            page, ["assign homework", "no homework", "delete homework"],
+            timeout_ms=8000)
+        enable_flutter_acc(page)
+        s = screenshot(page, f"mod_{job_slug}_homework")
+        hw_body = " ".join(t.lower() for t in hw_texts)
+        stub = "coming soon" in hw_body
+        coach_ok = any(k in hw_body for k in
+                       ("assign homework", "no homework", "delete homework"))
+        record("Modules", f"{job}: Homework coach view loads (no stub)",
+               "pass" if (hw_open and not stub and coach_ok) else "fail",
+               "Coach homework view (empty state or assignment rows)", s,
+               f"opened={hw_open} url={page.url}")
+        go_home(page)
+
+    # own3's business has a real client by now (invite.client@robot.test,
+    # invited by the associate in Step 7) — drive the full assign → list
+    # → delete cycle through the coach view. The loop above leaves own3
+    # signed in (its iteration is last); only sign in fresh if it didn't.
+    if on_role_shell(page) or login(page, "own3@robot.test"):
+        # URL-less pushed routes (AgreementDetail class): each hop below is
+        # verified by screen text with one recovery retry. Without this a
+        # missed Back/Content/chip click cascades silently — the 70/72 run
+        # drove the whole E2E on the Reviews screen (fab=False and every
+        # step after it failed) because the hub hop was never confirmed.
+        go_home(page)
+        find_and_click(page, "Content")
+        wait_for_texts(page, ["Tools"], timeout_ms=8000)
+        if not has(page, ["Tools"]):
+            go_home(page)
+            find_and_click(page, "Content")
+            wait_for_texts(page, ["Tools"], timeout_ms=8000)
+        enable_flutter_acc(page)
+        find_and_click(page, "Homework")
+        # Race-safe: the chip's el.click() returns on match, not on
+        # navigation — wait for the coach view's FAB before driving it.
+        wait_for_texts(page, ["Assign Homework", "No homework"],
+                       timeout_ms=8000)
+        if not has(page, ["Assign Homework", "No homework"]):
+            go_home(page)
+            find_and_click(page, "Content")
+            wait_for_texts(page, ["Tools"], timeout_ms=8000)
+            find_and_click(page, "Homework")
+            wait_for_texts(page, ["Assign Homework", "No homework"],
+                           timeout_ms=8000)
+        enable_flutter_acc(page)
+
+        fab = find_and_click(page, "Assign Homework")
+        wait_for_texts(page, ["Title"], timeout_ms=6000)  # dialog rendered
+        enable_flutter_acc(page)
+        opened_dd = find_and_click(page, "Client")  # open the picker first
+        page.wait_for_timeout(1000)
+        picked = find_and_click(page, "Robot Client")
+        page.wait_for_timeout(1000)
+        filled = fill_by_label_prefix(page, "Title", "Week 1 mobility flow")
+        submitted = click_btn(page, "Assign")
+        # The invalidation -> rebuild -> mock fetch can outlast a fixed wait.
+        assign_texts = wait_for_texts(page, ["Week 1 mobility flow"],
+                                      timeout_ms=8000)
+        enable_flutter_acc(page)
+        s = screenshot(page, "mod_homework_assigned")
+        listed = has_all(page, ["Week 1 mobility flow", "Robot Client"])
+        record("Modules", "Strength Coach: assign homework reaches the coach list",
+               "pass" if (fab and opened_dd and picked and filled and submitted
+                          and listed) else "fail",
+               "Assigned item visible under the client header", s,
+               f"fab={fab} opened_dd={opened_dd} picked={picked} "
+               f"filled={filled} submitted={submitted} listed={listed}")
+
+        # Skip the delete drive when assign failed: clicking around on the
+        # wrong screen (the 70/72 run hit 'Delete homework' on Reviews)
+        # wastes time and can only misfire.
+        deleted = confirmed = gone = False
+        if listed:
+            deleted = find_and_click(page, "Delete homework")
+            page.wait_for_timeout(1200)
+            enable_flutter_acc(page)
+            # click_btn's EXACT text match, not find_and_click: the list's
+            # 'Delete homework' IconButton also prefix-matches 'Delete'.
+            confirmed = click_btn(page, "Delete")
+            gone = until_absent(page, ["Week 1 mobility flow"], timeout_ms=8000)
+        s = screenshot(page, "mod_homework_deleted")
+        record("Modules", "Strength Coach: delete homework removes the item",
+               "pass" if (deleted and confirmed and gone) else "fail",
+               "Item gone after Delete confirmation", s,
+               f"deleted={deleted} confirmed={confirmed} gone={gone}")
 
     # =====================================================================
     # SAVE RESULTS
